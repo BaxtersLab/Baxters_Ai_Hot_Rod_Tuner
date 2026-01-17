@@ -1,0 +1,11 @@
+{
+  "host": "workstation-01",
+  "timestamp": "2026-01-14T12:00:00Z",
+  "sensors": {
+    "cpu_temp_c": 68.2,
+    "gpu_temp_c": 74.5,
+    "cpu_usage_pct": 85.3,
+    "gpu_usage_pct": 91.2,
+    "memory_used_mb": 14372
+  }
+}
