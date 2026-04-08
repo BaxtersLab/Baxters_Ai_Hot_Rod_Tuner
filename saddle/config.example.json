@@ -1,0 +1,11 @@
+{
+  "app": "Baxters AI Hot Rod Tuner",
+  "subscribe": { "type": "http_poll", "url": "http://localhost:8080/telemetry" },
+  "forward": [ { "type": "file", "path": "C:/path/to/collected/hrt_telemetry.jsonl" } ],
+  "transforms": [],
+  "poll_interval_ms": 5000,
+  "poll_timeout_ms": 3000,
+  "health_url": "http://localhost:8080/health",
+  "pipe_path": "\\\\.\\pipe\\hrt_telemetry",
+  "metrics_bind": "127.0.0.1:9080"
+}

@@ -1,0 +1,73 @@
+================================================================================
+BLOCK A-1 — SADDLE CONFIG COMPLETENESS + HEALTH ENDPOINT
+Module A: Operational Hardening
+================================================================================
+
+BLOCK ID:       A-1
+MODULE:         A — Operational Hardening
+PROJECT:        Baxters AI Hot Rod Tuner (HRT)
+AGENT:          Agent 11 (Rust / Python / General)
+DEPENDS ON:     None (standalone refinement)
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+The HRT saddle config is missing operational fields that every other app in the
+suite defines: poll interval, timeout, health endpoint, pipe_path, and
+metrics_bind. This block adds those fields and implements a /health endpoint
+in the existing server so the saddle and RemoteDexter can probe liveness.
+
+No existing functionality is removed or changed. This is additive only.
+
+--------------------------------------------------------------------------------
+CONSTRAINTS
+--------------------------------------------------------------------------------
+- No cloud dependencies. Health endpoint binds to localhost only.
+- No new external packages beyond what requirements.txt already lists.
+- Do not modify existing telemetry collection or policy engine logic.
+
+--------------------------------------------------------------------------------
+IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+1. SADDLE CONFIG UPDATE
+   File: saddle/config.example.json
+
+   Add these fields to the existing JSON (do not remove existing fields):
+
+     "poll_interval_ms": 5000,
+     "poll_timeout_ms": 3000,
+     "health_url": "http://localhost:8080/health",
+     "pipe_path": "\\\\.\\pipe\\hrt_telemetry",
+     "metrics_bind": "127.0.0.1:9080"
+
+2. HEALTH ENDPOINT
+   File: run_server.py (or wherever the HTTP server is defined)
+
+   Add a GET /health route that returns:
+     HTTP 200  {"status": "ok", "uptime_secs": <float>}
+
+   Implementation:
+   - Record server start time at boot.
+   - /health computes elapsed seconds and returns JSON.
+   - No authentication required on /health.
+   - Bind to existing server — do NOT start a second HTTP listener.
+
+3. TELEMETRY PIPE STUB
+   File: src/telemetry_pipe.py (NEW — optional, only if not already present)
+
+   If HRT does not yet emit to a named pipe, create a stub module that:
+   - Opens \\.\pipe\hrt_telemetry (write end)
+   - Exposes a function: emit_event(event_type: str, payload: dict)
+   - Serializes as JSON + newline
+   - Fails silently (log warning) if pipe not connected — never crash HRT
+
+   This stub is wired in later by the RemoteDexter integration team.
+
+--------------------------------------------------------------------------------
+VERIFICATION
+--------------------------------------------------------------------------------
+- [ ] saddle/config.example.json has all 5 new fields
+- [ ] GET http://localhost:8080/health returns 200 with uptime_secs
+- [ ] Server still starts and runs all existing functionality unchanged
+- [ ] No new external dependencies added to requirements.txt

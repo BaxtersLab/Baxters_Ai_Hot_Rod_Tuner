@@ -1,7 +1,11 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pathlib import Path
+import asyncio
 import psutil
 import json
+import time
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from pydantic import BaseModel
@@ -10,8 +14,12 @@ from .metrics import MetricsStore
 from .policies import DecisionEngine, PolicyConfig
 from .scheduler import TokenBucketScheduler
 from .sound import sound_manager
+from .sensors import sensor_poller
 
 app = FastAPI(title="Baxters Hot Rod Tuner")
+
+# Record server start time for uptime calculation (Seed A1-02)
+_SERVER_START_TIME: float = time.monotonic()
 
 # Global instances
 metrics_store = MetricsStore()
@@ -19,8 +27,83 @@ policy_config = PolicyConfig()
 decision_engine = DecisionEngine(policy_config)
 scheduler = TokenBucketScheduler()
 
+# Linked external apps: list of {app_name, exe_path, pid}
+_linked_apps: list = []
+
 # Play startup sound on app initialization
 sound_manager.play_startup_sound(blocking=False)
+
+# ── Static files + GUI root ──────────────────────────────────────────
+import sys as _sys
+if getattr(_sys, 'frozen', False):
+    _BASE_DIR = Path(_sys._MEIPASS)
+else:
+    _BASE_DIR = Path(__file__).resolve().parent.parent.parent
+_STATIC_DIR = _BASE_DIR / "static"
+_ASSETS_DIR = _BASE_DIR / "assets"
+if _ASSETS_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=str(_ASSETS_DIR)), name="assets")
+if _STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+
+@app.on_event("startup")
+def _on_startup():
+    sensor_poller.start()
+
+
+@app.on_event("shutdown")
+def _on_shutdown():
+    sensor_poller.stop()
+
+
+@app.get("/", include_in_schema=False)
+def serve_gui():
+    """Serve the Hot Rod Tuner dashboard."""
+    index = _STATIC_DIR / "index.html"
+    if index.is_file():
+        return FileResponse(str(index))
+    return {"error": "GUI not found — place index.html in static/"}
+
+
+# ── WebSocket: live sensor stream ────────────────────────────────────
+@app.websocket("/ws/sensors")
+async def ws_sensors(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            snap = sensor_poller.snapshot()
+            if snap:
+                await websocket.send_json(snap.to_dict())
+            await asyncio.sleep(1.0)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+
+
+# ── API: current sensor snapshot (REST fallback) ─────────────────────
+@app.get("/api/sensors")
+def api_sensors():
+    snap = sensor_poller.snapshot()
+    if snap:
+        return snap.to_dict()
+    return {"timestamp": 0, "sensors": []}
+
+
+# ── API: which monitored processes are running ───────────────────────
+@app.get("/api/processes")
+def api_processes():
+    """Return list of currently-running executable paths (lowercase)."""
+    running = set()
+    for p in psutil.process_iter(["exe"]):
+        try:
+            exe = p.info.get("exe")
+            if exe:
+                running.add(exe.lower())
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return {"running": list(running)}
 
 
 class TelemetryPayload(BaseModel):
@@ -43,6 +126,19 @@ class KillPayload(BaseModel):
     actor: str = "unknown"
     scope: str = "default"
     operation_id: Optional[str] = None
+
+
+class LinkPayload(BaseModel):
+    app_name: str
+    exe_path: str
+    pid: int
+
+
+@app.get("/health")
+def health():
+    """Health check endpoint. Returns 200 with status and uptime_secs (Seed A1-02)."""
+    uptime = time.monotonic() - _SERVER_START_TIME
+    return {"status": "ok", "uptime_secs": round(uptime, 3)}
 
 
 @app.get("/status")
@@ -241,8 +337,57 @@ def get_available_sounds():
     return {"sounds": sound_manager.get_available_sounds()}
 
 
+@app.get("/api/sound-folder")
+def get_sound_folder():
+    """Return the path to the assets/sounds folder."""
+    return {"path": str(_ASSETS_DIR)}
+
+
+@app.post("/api/sound-folder/open")
+def open_sound_folder():
+    """Open the assets folder in the system file explorer."""
+    import subprocess
+    folder = str(_ASSETS_DIR)
+    try:
+        subprocess.Popen(["explorer", folder])
+        return {"ok": True, "path": folder}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ── Link: external app registration ─────────────────────────────────────
+@app.post('/link')
+def link_app(payload: LinkPayload):
+    """Register an external app so HRT can monitor and e-stop it."""
+    # Remove any stale entry for the same app
+    _linked_apps[:] = [a for a in _linked_apps if a['app_name'] != payload.app_name]
+    entry = {
+        'app_name': payload.app_name,
+        'exe_path': payload.exe_path,
+        'pid': payload.pid,
+        'linked_at': now_utc_iso(),
+    }
+    _linked_apps.append(entry)
+    return {"ok": True, "linked": entry}
+
+
+@app.get('/link')
+def get_linked_apps():
+    """Return the list of currently linked external apps."""
+    return {"linked_apps": _linked_apps}
+
+
+@app.post('/api/shutdown')
+def shutdown_server():
+    """Shut down the entire HRT process."""
+    import os, signal
+    os.kill(os.getpid(), signal.SIGTERM)
+    return {"ok": True}
+
+
 @app.post('/kill')
-def kill(payload: KillPayload):
+@app.post('/api/kill')
+def kill_process(payload: KillPayload):
     """Kill processes matching a binary path. Payload: {path, dry_run=true, actor, scope, operation_id}
 
     This endpoint writes a minimal audit event to `audit/hotrod_audit.jsonl` in the repo root.
@@ -298,32 +443,3 @@ def _kill_by_path(path: str, dry_run: bool = True):
         except Exception as e:
             return {"ok": False, "error": str(e)}
     return {"ok": True, "killed": killed}
-
-
-@app.post('/kill')
-def kill(payload: dict):
-    """Kill processes matching a binary path. Payload: {path, dry_run=true, actor, scope, operation_id}
-
-    This endpoint writes a minimal audit event to `audit/hotrod_audit.jsonl` in the repo root.
-    """
-    path = payload.get('path')
-    dry_run = bool(payload.get('dry_run', True))
-    actor = payload.get('actor', 'unknown')
-    scope = payload.get('scope', 'default')
-    operation_id = payload.get('operation_id') or f"hotrod-{datetime.now(timezone.utc).timestamp()}"
-
-    result = _kill_by_path(path, dry_run=dry_run)
-
-    # emit simple audit event
-    audit_event = {
-        'type': 'governor_kill_executed' if result.get('ok') else 'governor_kill_failed',
-        'timestamp': now_utc_iso(),
-        'actor': actor,
-        'operation_id': operation_id,
-        'scope': scope,
-        'capability': 'governor.kill',
-        'details': {'payload': {'path': path, 'dry_run': dry_run}, 'result': result},
-    }
-    write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
-
-    return result

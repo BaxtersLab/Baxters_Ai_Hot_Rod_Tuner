@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>Hot Rod Tuner</title>
+<link rel="icon" type="image/x-icon" href="/assets/HRT_ICON.ico"/>
+<style>
+  :root {
+    --bg: #1a1a1a;
+    --panel: #222;
+    --text: #ccc;
+    --dim: #777;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --orange: #f97316;
+    --red: #ef4444;
+    --accent: #38bdf8;
+    --bar-bg: #2a2a2a;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 10px;
+    width: 100vw; height: 100vh;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  /* ── Title bar ── */
+  .titlebar {
+    height: 22px; background: #111; display: flex; align-items: center;
+    padding: 0 8px; font-size: 9px; flex-shrink: 0;
+    border-bottom: 1px solid #333;
+  }
+  .titlebar .logo { font-weight: 800; color: var(--accent); letter-spacing: 0.5px; cursor: pointer; -webkit-app-region: no-drag; }
+  .titlebar .logo:hover { text-shadow: 0 0 6px var(--accent); }
+  .titlebar .spacer { flex:1; }
+  .titlebar .conn { display: flex; align-items: center; gap: 3px; }
+  .dot { width:6px; height:6px; border-radius:50%; display:inline-block; }
+  .dot.ok { background: var(--green); }
+  .dot.err { background: var(--red); }
+
+  /* ── Alert banner ── */
+  .alert-bar {
+    height: 0; overflow: hidden; transition: height .2s; text-align: center;
+    font-weight: 700; font-size: 9px; line-height: 18px;
+  }
+  .alert-bar.show { height: 18px; }
+  .alert-bar.yellow { background: var(--yellow); color: #111; }
+  .alert-bar.orange { background: var(--orange); color: #111; }
+  .alert-bar.red { background: var(--red); color: #fff; }
+
+  /* ── Sensor lanes (main content) ── */
+  .lanes { flex: 1; overflow-y: auto; padding: 4px 6px; }
+  .lane {
+    display: flex; align-items: center; gap: 4px;
+    margin-bottom: 3px;
+  }
+  .lane-label {
+    width: 72px; font-size: 9px; color: var(--dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .lane-bar-wrap {
+    flex: 1; height: 10px; background: var(--bar-bg); border-radius: 2px;
+    overflow: hidden; position: relative;
+  }
+  .lane-bar-fill {
+    height: 100%; border-radius: 2px; transition: width .4s, background .4s;
+    min-width: 0;
+  }
+  .lane-val {
+    width: 38px; font-size: 9px; text-align: right; font-weight: 600;
+    flex-shrink: 0; font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Bottom toolbar ── */
+  .toolbar {
+    display: flex; align-items: center; gap: 4px;
+    padding: 4px 6px; border-top: 1px solid #333;
+    background: #161616; flex-shrink: 0;
+  }
+  .estop-btn {
+    flex: 1; height: 22px; border-radius: 3px;
+    border: 1px solid var(--red);
+    background: linear-gradient(180deg, #b91c1c, #7f1d1d);
+    color: #fff; font-size: 9px; font-weight: 800; cursor: pointer;
+    letter-spacing: 1px; text-transform: uppercase;
+  }
+  .estop-btn:hover { box-shadow: 0 0 8px rgba(239,68,68,0.4); }
+  .estop-btn:active { transform: scale(0.97); }
+  .gear-btn {
+    width: 22px; height: 22px; border-radius: 3px; border: 1px solid #444;
+    background: #2a2a2a; color: #aaa; font-size: 12px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .gear-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .gear-btn.open { border-color: var(--accent); color: var(--accent); background: #1e3a52; }
+
+  /* ── Settings drop-up ── */
+  .dropup {
+    display: none; flex-direction: column;
+    border-top: 1px solid #333; background: #1e1e1e;
+    max-height: 220px; overflow-y: auto; padding: 6px;
+    flex-shrink: 0;
+  }
+  .dropup.open { display: flex; }
+  .dropup h4 {
+    font-size: 9px; color: var(--accent); text-transform: uppercase;
+    letter-spacing: 0.8px; margin: 4px 0 3px; padding-bottom: 2px;
+    border-bottom: 1px solid #333;
+  }
+  .dropup h4:first-child { margin-top: 0; }
+
+  /* Thresholds */
+  .thresh-row {
+    display: flex; align-items: center; gap: 4px; margin-bottom: 2px; font-size: 9px;
+  }
+  .thresh-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+  .thresh-dot.yellow { background: var(--yellow); }
+  .thresh-dot.orange { background: var(--orange); }
+  .thresh-dot.red { background: var(--red); }
+  .thresh-row label { width: 44px; color: var(--dim); }
+  .thresh-row input[type=number] {
+    width: 40px; background: #2a2a2a; border: 1px solid #444; color: #ddd;
+    padding: 1px 3px; border-radius: 2px; font-size: 9px; text-align: center;
+  }
+  .thresh-row .unit { color: var(--dim); }
+
+  /* Process tray */
+  .proc-item {
+    display: flex; align-items: center; gap: 4px; padding: 2px 0;
+    border-bottom: 1px solid #2a2a2a; font-size: 9px;
+  }
+  .proc-item .p-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .proc-item .p-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#bbb; }
+  .proc-item button {
+    background: none; border: none; color: #666; cursor: pointer; font-size: 9px; padding: 0 2px;
+  }
+  .proc-item button:hover { color: var(--red); }
+  .proc-add {
+    display: flex; gap: 3px; margin-top: 3px;
+  }
+  .proc-add input {
+    flex:1; background: #2a2a2a; border: 1px solid #444; color: #ddd;
+    padding: 2px 4px; border-radius: 2px; font-size: 9px;
+  }
+  .proc-add button {
+    background: var(--accent); border: none; color: #111; border-radius: 2px;
+    padding: 2px 6px; font-size: 9px; font-weight: 700; cursor: pointer;
+  }
+
+  /* Linked apps */
+  .linked-item {
+    display: flex; align-items: center; gap: 4px; padding: 2px 0;
+    font-size: 9px; color: #bbb;
+  }
+  .linked-item .l-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+  .linked-item .l-name { flex:1; }
+  .linked-item .l-pid { color: var(--dim); }
+  .no-links { color: var(--dim); font-size: 9px; font-style: italic; }
+</style>
+</head>
+<body>
+
+<!-- Title bar -->
+<div class="titlebar">
+  <span class="logo">🏎️ HRT</span>
+  <div class="spacer"></div>
+  <div class="conn"><span class="dot err" id="connDot"></span><span id="connText">…</span></div>
+</div>
+
+<!-- Alert banner -->
+<div class="alert-bar" id="alertBar"></div>
+
+<!-- Sensor lanes -->
+<div class="lanes" id="lanePanel"></div>
+
+<!-- Settings drop-up (above toolbar) -->
+<div class="dropup" id="dropup">
+  <h4>Thresholds °C</h4>
+  <div class="thresh-row"><div class="thresh-dot yellow"></div><label>Warn</label>
+    <input type="number" id="thYellow" value="70" min="30" max="120" step="1"><span class="unit">°C</span></div>
+  <div class="thresh-row"><div class="thresh-dot orange"></div><label>Throttle</label>
+    <input type="number" id="thOrange" value="82" min="30" max="120" step="1"><span class="unit">°C</span></div>
+  <div class="thresh-row"><div class="thresh-dot red"></div><label>E-Stop</label>
+    <input type="number" id="thRed" value="95" min="30" max="120" step="1"><span class="unit">°C</span></div>
+
+  <h4>Process Tray</h4>
+  <div id="procList"></div>
+  <div class="proc-add">
+    <input id="procInput" placeholder="C:\path\to\app.exe" spellcheck="false"/>
+    <button id="procAddBtn">+</button>
+  </div>
+
+  <h4>Linked Apps</h4>
+  <div id="linkedList"><span class="no-links">None</span></div>
+
+  <h4>Sound</h4>
+  <div style="display:flex;align-items:center;gap:6px;">
+    <button id="soundFolderBtn" style="background:var(--accent);border:none;color:#111;border-radius:2px;padding:2px 8px;font-size:9px;font-weight:700;cursor:pointer;">📂 Sound Folder</button>
+    <span id="soundFileLabel" style="font-size:9px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+  </div>
+</div>
+
+<!-- Bottom toolbar -->
+<div class="toolbar">
+  <button class="estop-btn" id="estopBtn">⛔ E-STOP</button>
+  <button class="gear-btn" id="gearBtn" title="Settings">⚙</button>
+</div>
+
+<script>
+"use strict";
+
+// ── State ───────────────────────────────────────────────────────────
+let ws = null;
+let lanes = {};          // name -> {row, fill, valEl}
+let processes = [];      // [{path, running}]
+let audioCtx = null;
+let currentAlertLevel = "none";
+
+const STORE_KEY = "hrt_processes";
+const THRESH_KEY = "hrt_thresholds";
+
+try { processes = JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch(e) {}
+function saveProcesses() { localStorage.setItem(STORE_KEY, JSON.stringify(processes)); }
+function getThresholds() {
+  return {
+    yellow: parseFloat(document.getElementById("thYellow").value) || 70,
+    orange: parseFloat(document.getElementById("thOrange").value) || 82,
+    red:    parseFloat(document.getElementById("thRed").value) || 95,
+  };
+}
+function saveThresholds() { localStorage.setItem(THRESH_KEY, JSON.stringify(getThresholds())); }
+try {
+  const t = JSON.parse(localStorage.getItem(THRESH_KEY));
+  if (t) {
+    document.addEventListener("DOMContentLoaded", () => {
+      if (t.yellow) document.getElementById("thYellow").value = t.yellow;
+      if (t.orange) document.getElementById("thOrange").value = t.orange;
+      if (t.red)    document.getElementById("thRed").value = t.red;
+    });
+  }
+} catch(e) {}
+document.getElementById("thYellow").addEventListener("change", saveThresholds);
+document.getElementById("thOrange").addEventListener("change", saveThresholds);
+document.getElementById("thRed").addEventListener("change", saveThresholds);
+
+// ── Settings drop-up toggle ─────────────────────────────────────────
+document.getElementById("gearBtn").addEventListener("click", () => {
+  const du = document.getElementById("dropup");
+  const gb = document.getElementById("gearBtn");
+  du.classList.toggle("open");
+  gb.classList.toggle("open");
+  if (du.classList.contains("open")) refreshLinked();
+});
+
+// ── WebSocket ───────────────────────────────────────────────────────
+function connectWs() {
+  const loc = window.location;
+  const proto = loc.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${loc.host}/ws/sensors`);
+  ws.onopen = () => {
+    document.getElementById("connDot").className = "dot ok";
+    document.getElementById("connText").textContent = "Live";
+  };
+  ws.onclose = () => {
+    document.getElementById("connDot").className = "dot err";
+    document.getElementById("connText").textContent = "…";
+    setTimeout(connectWs, 2000);
+  };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (ev) => {
+    try {
+      const snap = JSON.parse(ev.data);
+      updateLanes(snap.sensors || []);
+      checkAlerts(snap.sensors || []);
+    } catch(e) {}
+  };
+}
+
+// ── Flat bar lanes ──────────────────────────────────────────────────
+function barColor(s) {
+  const th = getThresholds();
+  if (s.category === "temperature") {
+    if (s.value >= th.red) return "#ef4444";
+    if (s.value >= th.orange) return "#f97316";
+    if (s.value >= th.yellow) return "#eab308";
+    return "#22c55e";
+  }
+  if (s.unit === "%") {
+    if (s.value > 90) return "#ef4444";
+    if (s.value > 75) return "#f97316";
+    if (s.value > 60) return "#eab308";
+    return "#22c55e";
+  }
+  return "#38bdf8";
+}
+
+function getOrCreateLane(s) {
+  if (lanes[s.name]) return lanes[s.name];
+  const panel = document.getElementById("lanePanel");
+  const row = document.createElement("div");
+  row.className = "lane";
+
+  const lbl = document.createElement("div");
+  lbl.className = "lane-label";
+  lbl.title = s.label || s.name;
+  lbl.textContent = s.label || s.name;
+
+  const wrap = document.createElement("div");
+  wrap.className = "lane-bar-wrap";
+  const fill = document.createElement("div");
+  fill.className = "lane-bar-fill";
+  wrap.appendChild(fill);
+
+  const val = document.createElement("div");
+  val.className = "lane-val";
+
+  row.appendChild(lbl);
+  row.appendChild(wrap);
+  row.appendChild(val);
+  panel.appendChild(row);
+
+  const l = { row, fill, valEl: val, lblEl: lbl };
+  lanes[s.name] = l;
+  return l;
+}
+
+function updateLanes(sensors) {
+  for (const s of sensors) {
+    const l = getOrCreateLane(s);
+    let maxVal = 100;
+    if (s.unit === "°C") maxVal = 110;
+    else if (s.unit === "RPM") maxVal = Math.max(s.value * 1.3, 3000);
+    else if (s.unit === "MHz") maxVal = Math.max(s.value * 1.3, 5000);
+
+    const pct = Math.min((s.value / maxVal) * 100, 100);
+    const color = barColor(s);
+    l.fill.style.width = pct + "%";
+    l.fill.style.background = color;
+    l.valEl.textContent = s.value.toFixed(s.unit === "%" ? 0 : 1) + s.unit;
+    l.valEl.style.color = color;
+  }
+}
+
+// ── Alert logic ─────────────────────────────────────────────────────
+function checkAlerts(sensors) {
+  const th = getThresholds();
+  let maxTemp = 0;
+  for (const s of sensors) {
+    if (s.category === "temperature" && s.value > maxTemp) maxTemp = s.value;
+  }
+  let level = "none";
+  if (maxTemp >= th.red) level = "red";
+  else if (maxTemp >= th.orange) level = "orange";
+  else if (maxTemp >= th.yellow) level = "yellow";
+
+  const bar = document.getElementById("alertBar");
+  if (level === "none") { bar.className = "alert-bar"; currentAlertLevel = "none"; return; }
+  if (level !== currentAlertLevel) {
+    bar.className = "alert-bar show " + level;
+    if (level === "yellow") { bar.textContent = `⚠ ${maxTemp.toFixed(0)}°C`; playBeep(660, 0.12); }
+    else if (level === "orange") { bar.textContent = `🔶 THROTTLE ${maxTemp.toFixed(0)}°C`; playBeep(880, 0.2); sendThrottle(); }
+    else if (level === "red") { bar.textContent = `🛑 E-STOP ${maxTemp.toFixed(0)}°C`; playBeep(1100, 0.35); triggerEstop(); }
+    currentAlertLevel = level;
+  }
+}
+function playBeep(f, d) {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.connect(g); g.connect(audioCtx.destination);
+    o.frequency.value = f; g.gain.value = 0.25;
+    o.start(); o.stop(audioCtx.currentTime + d);
+  } catch(e) {}
+}
+
+// ── E-Stop ──────────────────────────────────────────────────────────
+document.getElementById("estopBtn").addEventListener("click", () => {
+  if (confirm("E-STOP all monitored processes?")) triggerEstop();
+});
+function triggerEstop() {
+  for (const p of processes) {
+    fetch("/api/kill", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({path:p.path, dry_run:false, actor:"hrt-gui", scope:"estop"})
+    }).catch(()=>{});
+  }
+}
+function sendThrottle() { console.log("Throttle threshold reached"); }
+
+// ── Process tray ────────────────────────────────────────────────────
+function renderProcesses() {
+  const list = document.getElementById("procList");
+  list.innerHTML = "";
+  for (let i = 0; i < processes.length; i++) {
+    const p = processes[i];
+    const row = document.createElement("div");
+    row.className = "proc-item";
+    row.innerHTML =
+      `<div class="p-dot" style="background:${p.running?'var(--green)':'#555'}"></div>` +
+      `<div class="p-name" title="${esc(p.path)}">${esc(basename(p.path))}</div>` +
+      `<button data-idx="${i}">✕</button>`;
+    list.appendChild(row);
+  }
+  list.querySelectorAll("button").forEach(b => {
+    b.addEventListener("click", e => {
+      processes.splice(parseInt(e.target.dataset.idx), 1);
+      saveProcesses(); renderProcesses();
+    });
+  });
+}
+document.getElementById("procAddBtn").addEventListener("click", addProc);
+document.getElementById("procInput").addEventListener("keydown", e => { if (e.key === "Enter") addProc(); });
+function addProc() {
+  const inp = document.getElementById("procInput"), v = inp.value.trim();
+  if (!v || processes.some(p => p.path.toLowerCase() === v.toLowerCase())) return;
+  processes.push({path:v, running:false}); saveProcesses(); renderProcesses(); inp.value = "";
+}
+async function refreshProcStatus() {
+  try {
+    const r = await fetch("/api/processes"); if (!r.ok) return;
+    const d = await r.json();
+    const s = new Set((d.running||[]).map(p=>p.toLowerCase()));
+    for (const p of processes) p.running = s.has(p.path.toLowerCase());
+    renderProcesses();
+  } catch(e) {}
+}
+
+// ── Linked apps ─────────────────────────────────────────────────────
+async function refreshLinked() {
+  try {
+    const r = await fetch("/link"); if (!r.ok) return;
+    const d = await r.json();
+    const el = document.getElementById("linkedList");
+    if (!d.linked_apps || d.linked_apps.length === 0) { el.innerHTML = '<span class="no-links">None</span>'; return; }
+    el.innerHTML = "";
+    for (const a of d.linked_apps) {
+      const row = document.createElement("div");
+      row.className = "linked-item";
+      row.innerHTML = `<div class="l-dot"></div><div class="l-name">${esc(a.app_name)}</div><div class="l-pid">pid ${a.pid}</div>`;
+      el.appendChild(row);
+    }
+  } catch(e) {}
+}
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function basename(p) { return p.split(/[\\/]/).pop() || p; }
+
+// ── Close guard ─────────────────────────────────────────────────────
+let _cachedLinked = [];
+async function _fetchLinkedForClose() {
+  try {
+    const r = await fetch("/link");
+    if (r.ok) { const d = await r.json(); _cachedLinked = d.linked_apps || []; }
+  } catch(e) {}
+}
+setInterval(_fetchLinkedForClose, 3000);
+
+window.addEventListener('beforeunload', (e) => {
+  const monitored = [...processes.map(p => basename(p.path)), ..._cachedLinked.map(a => a.app_name)];
+  if (monitored.length === 0) return;          // no rebuttal, close freely
+  e.preventDefault();
+  e.returnValue = '';                          // triggers browser close dialog
+});
+
+// When the page actually unloads, tell the server to shut down
+window.addEventListener('unload', () => {
+  navigator.sendBeacon('/api/shutdown');
+});
+
+// ── Reset (blue title button) ───────────────────────────────────────
+function resetApp() {
+  // 1. Close existing WebSocket
+  if (ws) { try { ws.onclose = null; ws.close(); } catch(e) {} ws = null; }
+
+  // 2. Clear all sensor lanes
+  document.getElementById("lanePanel").innerHTML = "";
+  lanes = {};
+
+  // 3. Clear alert banner
+  currentAlertLevel = "none";
+  document.getElementById("alertBar").className = "alert-bar";
+  document.getElementById("alertBar").textContent = "";
+
+  // 4. Reset connection indicator
+  document.getElementById("connDot").className = "dot err";
+  document.getElementById("connText").textContent = "…";
+
+  // 5. Close settings drop-up if open
+  document.getElementById("dropup").classList.remove("open");
+  document.getElementById("gearBtn").classList.remove("open");
+
+  // 6. Play whatever .wav is in the assets folder
+  fetch("/sound/available").then(r => r.json()).then(d => {
+    if (d.sounds && d.sounds.length > 0) {
+      var snd = new Audio("/assets/" + encodeURIComponent(d.sounds[0]));
+      snd.volume = 0.5;
+      snd.play().catch(function(){});
+    }
+  }).catch(function(){});
+
+  // 7. Reconnect + refresh
+  connectWs();
+  refreshProcStatus();
+  refreshLinked();
+}
+document.querySelector(".titlebar .logo").addEventListener("click", resetApp);
+
+// ── Init ────────────────────────────────────────────────────────────
+renderProcesses();
+connectWs();
+setInterval(refreshProcStatus, 3000);
+
+// ── Sound folder button + label ─────────────────────────────────────
+document.getElementById("soundFolderBtn").addEventListener("click", () => {
+  fetch("/api/sound-folder/open", { method: "POST" }).catch(() => {});
+});
+fetch("/sound/available").then(r => r.json()).then(d => {
+  var label = document.getElementById("soundFileLabel");
+  if (d.sounds && d.sounds.length > 0) {
+    label.textContent = d.sounds[0];
+    label.title = d.sounds[0];
+  } else {
+    label.textContent = "No .wav file found";
+  }
+}).catch(() => {});
+</script>
+</body>
+</html>

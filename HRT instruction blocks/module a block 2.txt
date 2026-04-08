@@ -1,0 +1,67 @@
+================================================================================
+BLOCK A-2 — PYTHON DEPENDENCY RESOLUTION + PDF FIX
+Module A: Operational Hardening
+================================================================================
+
+BLOCK ID:       A-2
+MODULE:         A — Operational Hardening
+PROJECT:        Baxters AI Hot Rod Tuner (HRT)
+AGENT:          Agent 11 (Rust / Python / General)
+DEPENDS ON:     None (standalone)
+
+--------------------------------------------------------------------------------
+PURPOSE
+--------------------------------------------------------------------------------
+generate_pdfs.py has unresolved dependencies. requirements.txt may be missing
+packages or have unpinned versions. This block audits, pins, and resolves all
+Python dependencies so the project runs cleanly from a fresh venv.
+
+No existing functionality is removed. This is a fix-and-harden pass.
+
+--------------------------------------------------------------------------------
+CONSTRAINTS
+--------------------------------------------------------------------------------
+- No cloud service dependencies. All packages must work offline after install.
+- Pin all versions in requirements.txt for reproducibility.
+- Do not upgrade packages beyond what is needed to resolve breakage.
+
+--------------------------------------------------------------------------------
+IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+1. DEPENDENCY AUDIT
+   - Read requirements.txt and generate_pdfs.py imports.
+   - Identify every ImportError / ModuleNotFoundError.
+   - For each missing package, add it to requirements.txt with pinned version.
+
+2. PIN EXISTING VERSIONS
+   - For any unpinned dependency in requirements.txt (e.g., "flask" not
+     "flask==3.0.2"), pin to the latest stable version that works.
+   - Use the format: package==X.Y.Z
+
+3. GENERATE_PDFS FIX
+   File: generate_pdfs.py
+
+   - Verify the script runs end-to-end after dependency install.
+   - If it fails for reasons OTHER than missing packages (e.g., file paths,
+     missing templates), fix those issues.
+   - Add a shebang line if missing: #!/usr/bin/env python3
+
+4. STARTUP CHECKLIST
+   File: saddle/README.md (append, do not replace)
+
+   Add a "Quick Start" section:
+     ```
+     python -m venv .venv
+     .venv\Scripts\activate      # Windows
+     pip install -r requirements.txt
+     python run_server.py
+     ```
+
+--------------------------------------------------------------------------------
+VERIFICATION
+--------------------------------------------------------------------------------
+- [ ] Fresh venv + pip install -r requirements.txt succeeds with zero errors
+- [ ] python generate_pdfs.py runs without ImportError
+- [ ] python run_server.py starts server on expected port
+- [ ] All versions pinned in requirements.txt (no bare package names)

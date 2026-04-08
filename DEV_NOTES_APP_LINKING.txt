@@ -1,0 +1,213 @@
+DEV NOTES — Linking External Apps to Hot Rod Tuner (HRT)
+=========================================================
+Last updated: 2026-04-08
+
+This document explains how external apps register themselves with HRT so
+that HRT can monitor and emergency-stop (e-stop) them.  Two apps already
+implement this: AiSmartGuy and GGUF Chatbox.  Use them as reference when
+adding HRT link support to any future app.
+
+
+1. OVERVIEW
+-----------
+HRT runs a FastAPI server on localhost:8080.  External apps link by POSTing
+their identity (name, exe path, PID) to the /link endpoint.  Once linked,
+HRT can kill the app by PID/exe path when an e-stop is triggered (manual
+button or temperature threshold breach).
+
+The link is one-way and stateless on the client side:
+  - The external app sends a single POST to register itself.
+  - HRT holds the registration in memory for the lifetime of the server.
+  - If HRT restarts, linked apps must re-register.
+  - If the external app restarts, it should re-register (new PID).
+
+
+2. HRT SERVER-SIDE API
+----------------------
+
+POST /link — Register a linked app
+  Request body (JSON):
+    {
+      "app_name": "MyApp",          // Human-readable name, used as dedup key
+      "exe_path": "C:\\path\\to\\myapp.exe",
+      "pid": 12345                   // OS process ID
+    }
+  Response (200):
+    {
+      "ok": true,
+      "linked": {
+        "app_name": "MyApp",
+        "exe_path": "C:\\path\\to\\myapp.exe",
+        "pid": 12345,
+        "linked_at": "2026-04-08T12:00:00+00:00"
+      }
+    }
+  Notes:
+    - Re-posting with the same app_name replaces the previous entry (dedup).
+    - The server stores entries in an in-memory list (_linked_apps).
+
+GET /link — List all linked apps
+  Response (200):
+    { "linked_apps": [ ...entries... ] }
+
+POST /kill  (alias: POST /api/kill) — Kill a process by exe path
+  Request body (JSON):
+    {
+      "path": "C:\\path\\to\\myapp.exe",
+      "dry_run": false,              // true = just report matches, false = kill
+      "actor": "hrt-gui",           // who requested the kill
+      "scope": "estop"              // context label
+    }
+  Response (200):
+    { "ok": true, "killed": [12345] }
+  Notes:
+    - Resolves the exe path and finds all running processes that match.
+    - Uses psutil.Process.terminate() then waits up to 5 seconds.
+    - Every call is audited to audit/hotrod_audit.jsonl.
+
+POST /api/shutdown — Shut down HRT itself
+  No request body.  Sends SIGTERM to its own process.
+
+
+3. HOW AISMARTGUY LINKS TO HRT
+-------------------------------
+Location: AiSmartGuy/src-tauri/src/main.rs  (cmd_link_hrt)
+          AiSmartGuy/frontend/index.html     (auto-link + manual button)
+
+Rust command (Tauri invoke handler):
+
+    #[tauri::command]
+    fn cmd_link_hrt(port: u16) -> Result<String, String> {
+        let exe = std::env::current_exe()?.to_string_lossy().into_owned();
+        let pid = std::process::id();
+        let url = format!("http://127.0.0.1:{}/link", port);
+        let body = json!({
+            "app_name": "AiSmartGuy",
+            "exe_path": exe,
+            "pid": pid
+        });
+        // POST with 5-second timeout via ureq
+        let resp = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .post(&url)
+            .set("Content-Type", "application/json")
+            .send_string(&body.to_string())?;
+        // 200 = success
+    }
+
+Frontend — auto-link on startup:
+    Calls cmd_link_hrt({ port: 8080 }) immediately on page load.
+    If HRT isn't running, the error is silently swallowed.
+    The user can also click a manual "Link to Hot Rod Tuner" button in
+    Advanced Settings which calls the same command with status feedback.
+
+    autoLinkHrt();   // fires once on load
+    // No retry loop — fires once, manual fallback available
+
+
+4. HOW GGUF CHATBOX LINKS TO HRT
+---------------------------------
+Location: gguf chatbox/src-tauri/src/main.rs  (cmd_link_hrt)
+          gguf chatbox/frontend/main.js       (auto-link with retry)
+          gguf chatbox/frontend/advanced.html  (manual button)
+
+Rust command — identical pattern to AiSmartGuy, only the app_name differs:
+
+    body = json!({
+        "app_name": "GGUF Chatbox",
+        "exe_path": exe,
+        "pid": pid
+    });
+
+Frontend — auto-link with background retry:
+    Fires immediately on page load, then retries every 30 seconds until
+    linked.  This means HRT can be started after GGUF Chatbox and the
+    link will still happen automatically.
+
+    autoLinkHrt();      // fires immediately
+    startRetry();       // setInterval(autoLinkHrt, 30000) until linked
+
+    The Advanced Settings page also has a manual "Link to Hot Rod Tuner"
+    button with busy/ok/error status text.
+
+Note: The two JS contexts (main.js auto-link and advanced.html manual
+button) have independent hrtLinked flags.  This is harmless because
+re-posting the same app_name to /link just replaces the entry.
+
+
+5. HOW TO ADD HRT LINK SUPPORT TO A NEW APP
+--------------------------------------------
+
+Step 1: Pick your app_name
+    Choose a unique human-readable name (e.g. "My New App").
+    HRT deduplicates by app_name, so this must be distinct from other apps.
+
+Step 2: Implement the link call
+    Send a POST to http://127.0.0.1:8080/link with JSON body:
+      {
+        "app_name": "<your app name>",
+        "exe_path": "<full path to your running executable>",
+        "pid": <your OS process ID>
+      }
+    Use a short timeout (5 seconds).  If HRT isn't running, fail silently.
+
+    For Tauri/Rust apps, copy the cmd_link_hrt pattern from AiSmartGuy or
+    GGUF Chatbox — it uses ureq for the HTTP call and std::env::current_exe()
+    / std::process::id() for identity.
+
+    For Python apps:
+      import os, requests
+      requests.post("http://127.0.0.1:8080/link", json={
+          "app_name": "My App",
+          "exe_path": os.path.abspath(sys.argv[0]),
+          "pid": os.getpid()
+      }, timeout=5)
+
+    For Node.js / Electron apps:
+      fetch("http://127.0.0.1:8080/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          app_name: "My App",
+          exe_path: process.execPath,
+          pid: process.pid
+        })
+      }).catch(() => {});
+
+Step 3: Trigger the link call
+    Option A — Fire once on startup, swallow errors (AiSmartGuy pattern).
+    Option B — Fire on startup + retry every 30s until linked (GGUF Chatbox
+               pattern).  Better when HRT might start after your app.
+    Option C — Manual button only (user clicks to link).
+
+    Recommendation: Use Option B (auto with retry) for the best UX, plus
+    a manual button as a fallback with visual status feedback.
+
+Step 4: Register the Tauri command (Tauri apps only)
+    Add cmd_link_hrt to your .invoke_handler() builder:
+      .invoke_handler(tauri::generate_handler![..., cmd_link_hrt])
+
+Step 5: Test
+    1. Start HRT:  cd "Baxters Ai Hot Rod Tuner" && python run_server.py
+    2. Start your app.
+    3. Open HRT settings (gear icon) → Linked Apps section.
+    4. Verify your app appears with a green dot and its PID.
+    5. Click E-STOP and verify your app is terminated.
+
+
+6. CONVENTIONS / GOTCHAS
+-------------------------
+- Port 8080 is hardcoded on both sides.  If HRT's port changes, every
+  linked app must be updated.  Consider making the port configurable.
+- The link is in-memory only — HRT restart clears all links.  Apps should
+  re-link on reconnect or use the retry pattern.
+- Re-posting the same app_name is safe and acts as a re-register (updates
+  exe_path and PID).  This handles app restarts cleanly.
+- exe_path must be the actual running executable, not a shortcut or script.
+  HRT's kill logic resolves the path and matches it against running
+  processes via psutil.
+- The kill uses psutil.Process.terminate() (SIGTERM on Unix, TerminateProcess
+  on Windows) with a 5-second wait.  Apps should handle graceful shutdown.
+- Every kill is audited to audit/hotrod_audit.jsonl with timestamp, actor,
+  and scope fields.
