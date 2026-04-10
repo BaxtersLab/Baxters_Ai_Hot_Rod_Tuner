@@ -28,10 +28,16 @@ class SoundManager:
         else:
             # Resolve assets dir relative to project root (frozen-exe aware)
             if getattr(sys, 'frozen', False):
-                base = Path(sys._MEIPASS)
+                # Look next to the exe first (user-accessible), fall back to
+                # the bundled _MEIPASS assets
+                real_assets = Path(sys.executable).parent / "assets"
+                if real_assets.is_dir():
+                    self.sound_dir = real_assets
+                else:
+                    self.sound_dir = Path(sys._MEIPASS) / "assets"
             else:
                 base = Path(__file__).resolve().parent.parent.parent
-            self.sound_dir = base / "assets"
+                self.sound_dir = base / "assets"
         self._current_thread: Optional[threading.Thread] = None
 
     def play_startup_sound(self, blocking: bool = False) -> bool:

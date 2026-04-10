@@ -14,9 +14,35 @@ from .metrics import MetricsStore
 from .policies import DecisionEngine, PolicyConfig
 from .scheduler import TokenBucketScheduler
 from .sound import sound_manager
-from .sensors import sensor_poller
+from .sensors import sensor_poller, launch_lhm, stop_lhm
 
 app = FastAPI(title="Baxters Hot Rod Tuner")
+
+# ── Crash-resilient file logging ─────────────────────────────────────
+import logging as _logging
+_CRASH_LOG = Path('data') / 'hrt_server.log'
+_CRASH_LOG.parent.mkdir(parents=True, exist_ok=True)
+_file_handler = _logging.FileHandler(str(_CRASH_LOG), mode='a', encoding='utf-8')
+_file_handler.setFormatter(_logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+_hrt_log = _logging.getLogger('hrt')
+_hrt_log.setLevel(_logging.DEBUG)
+_hrt_log.addHandler(_file_handler)
+_hrt_log.info('=== HRT server module loaded ===')
+
+# ── Prevent Windows console events from killing the process ──────────
+import platform as _platform
+if _platform.system() == 'Windows':
+    try:
+        import ctypes as _ct
+        _HANDLER_TYPE = _ct.WINFUNCTYPE(_ct.c_int, _ct.c_uint)
+        @_HANDLER_TYPE
+        def _console_handler(event):
+            _hrt_log.warning(f'Console control event received: {event}')
+            return 1  # Block default handling (which calls ExitProcess)
+        _ct.windll.kernel32.SetConsoleCtrlHandler(_console_handler, 1)
+        _hrt_log.info('Console ctrl handler installed')
+    except Exception as _e:
+        _hrt_log.error(f'Failed to install console ctrl handler: {_e}')
 
 # Record server start time for uptime calculation (Seed A1-02)
 _SERVER_START_TIME: float = time.monotonic()
@@ -29,6 +55,49 @@ scheduler = TokenBucketScheduler()
 
 # Linked external apps: list of {app_name, exe_path, pid}
 _linked_apps: list = []
+_LINKED_FILE = Path('data') / 'linked_apps.json'
+
+def _save_linked():
+    """Persist linked apps list to disk."""
+    try:
+        _LINKED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _LINKED_FILE.write_text(json.dumps(_linked_apps, indent=2), encoding='utf-8')
+    except Exception as e:
+        print(f'[HRT] WARNING: could not save linked apps: {e}')
+
+def _load_linked():
+    """Load linked apps from disk and reconnect to live processes by exe name."""
+    try:
+        if _LINKED_FILE.is_file():
+            data = json.loads(_LINKED_FILE.read_text(encoding='utf-8'))
+            if isinstance(data, list):
+                reconnected = []
+                for entry in data:
+                    exe_path = entry.get('exe_path', '')
+                    exe_name = exe_path.strip().rsplit('\\', 1)[-1].rsplit('/', 1)[-1].lower()
+                    if not exe_name:
+                        continue
+                    # Search for a running process matching this exe name
+                    found_pid = None
+                    for proc in psutil.process_iter(['pid', 'name', 'exe']):
+                        try:
+                            pname = (proc.info.get('name') or '').lower()
+                            if pname == exe_name:
+                                found_pid = proc.info['pid']
+                                break
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
+                    if found_pid:
+                        entry['pid'] = found_pid
+                        reconnected.append(entry)
+                        print(f'[HRT] Reconnected to {entry.get("app_name","?")} (pid={found_pid})')
+                    else:
+                        print(f'[HRT] {entry.get("app_name","?")} not running — skipped')
+                _linked_apps[:] = reconnected
+                _save_linked()
+                print(f'[HRT] Linked apps: {len(reconnected)} connected, {len(data) - len(reconnected)} not running')
+    except Exception as e:
+        print(f'[HRT] WARNING: could not load linked apps: {e}')
 
 # Play startup sound on app initialization
 sound_manager.play_startup_sound(blocking=False)
@@ -49,12 +118,23 @@ if _STATIC_DIR.is_dir():
 
 @app.on_event("startup")
 def _on_startup():
+    _hrt_log.info('FastAPI startup event fired')
+    _load_linked()
+    launch_lhm()
     sensor_poller.start()
+    _hrt_log.info('Startup complete: LHM launched, poller started')
+
+@app.on_event("shutdown")
+def _on_shutdown():
+    _hrt_log.warning('FastAPI shutdown event fired — server is stopping')
+    import traceback
+    _hrt_log.warning(''.join(traceback.format_stack()))
 
 
 @app.on_event("shutdown")
 def _on_shutdown():
     sensor_poller.stop()
+    stop_lhm()
 
 
 @app.get("/", include_in_schema=False)
@@ -345,9 +425,20 @@ def get_sound_folder():
 
 @app.post("/api/sound-folder/open")
 def open_sound_folder():
-    """Open the assets folder in the system file explorer."""
-    import subprocess
-    folder = str(_ASSETS_DIR)
+    """Open the assets folder in the system file explorer.
+    
+    When running from the PyInstaller exe, _ASSETS_DIR points to the
+    temp extraction folder.  Instead, open the *real* assets folder
+    next to the exe (or next to the project root when running from source).
+    """
+    import subprocess, sys as _s
+    if getattr(_s, 'frozen', False):
+        # Frozen exe: assets sits next to the exe
+        folder = str(Path(_s.executable).parent / "assets")
+    else:
+        folder = str(_ASSETS_DIR)
+    # Create the folder if it doesn't exist yet so explorer doesn't error
+    Path(folder).mkdir(parents=True, exist_ok=True)
     try:
         subprocess.Popen(["explorer", folder])
         return {"ok": True, "path": folder}
@@ -368,6 +459,7 @@ def link_app(payload: LinkPayload):
         'linked_at': now_utc_iso(),
     }
     _linked_apps.append(entry)
+    _save_linked()
     return {"ok": True, "linked": entry}
 
 
@@ -379,10 +471,239 @@ def get_linked_apps():
 
 @app.post('/api/shutdown')
 def shutdown_server():
-    """Shut down the entire HRT process."""
-    import os, signal
-    os.kill(os.getpid(), signal.SIGTERM)
-    return {"ok": True}
+    """Shut down endpoint — disabled to prevent accidental kills from Edge events."""
+    print('[HRT] /api/shutdown called but ignored (disabled)')
+    return {"ok": False, "reason": "shutdown_disabled"}
+
+
+@app.get('/api/protected')
+def get_protected_list():
+    """Return the list of protected process names that E-Stop will never kill."""
+    return {"protected": sorted(_PROTECTED_NAMES)}
+
+
+class EstopPayload(BaseModel):
+    targets: list = []  # exe names or paths from process tray, e.g. ["aismartguy-app.exe", "ollama.exe"]
+
+
+# Protected system processes that must NEVER be killed
+_PROTECTED_NAMES = frozenset([
+    "system", "system idle process", "registry", "smss.exe", "csrss.exe",
+    "wininit.exe", "winlogon.exe", "services.exe", "lsass.exe", "lsaiso.exe",
+    "svchost.exe", "dwm.exe", "conhost.exe", "fontdrvhost.exe", "sihost.exe",
+    "taskhostw.exe", "explorer.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe",
+    "searchhost.exe", "runtimebroker.exe", "applicationframehost.exe",
+    "ctfmon.exe", "dllhost.exe", "dashost.exe", "wudfhost.exe",
+    "cmd.exe", "powershell.exe", "pwsh.exe", "windowsterminal.exe", "wt.exe",
+    "msedge.exe", "msedgewebview2.exe",
+    "ntoskrnl.exe", "audiodg.exe", "spoolsv.exe",
+    "securityhealthservice.exe", "msmpeng.exe", "nissrv.exe",
+    "hot rod tuner.exe",
+])
+
+
+def _is_protected(name: str) -> bool:
+    return name.lower() in _PROTECTED_NAMES
+
+
+_estop_lock = __import__('threading').Lock()
+
+@app.post('/api/estop')
+def server_estop(payload: EstopPayload = EstopPayload()):
+    """Server-side E-Stop: deterministic exe killer.
+
+    Pauses sensor polling, kills targets, then resumes.
+    Only one estop can run at a time (lock-guarded).
+    """
+    if not _estop_lock.acquire(blocking=False):
+        return {"ok": False, "error": "estop_already_running"}
+
+    try:
+        # Pause sensor polling so WMI/LHM driver is idle during kills
+        try:
+            sensor_poller.pause()
+        except Exception as pause_err:
+            import traceback
+            traceback.print_exc()
+
+        results = []
+        killed_pids = set()
+
+        print(f'[HRT] E-STOP: linked_apps={len(_linked_apps)}, targets={payload.targets}')
+
+        # 1. Kill all linked apps by PID
+        for a in list(_linked_apps):
+            pid = a.get('pid')
+            if not pid:
+                continue
+            print(f'[HRT] E-STOP: killing linked app "{a.get("app_name", "?")}" pid={pid}')
+            r = _safe_kill(pid)
+            r["source"] = "linked"
+            r["app"] = a.get("app_name", "?")
+            results.append(r)
+            print(f'[HRT] E-STOP:   result: {r}')
+            if r.get("ok"):
+                killed_pids.add(pid)
+
+        # 2. Scan all running processes and kill by exe name match
+        target_names = set()
+        for t in payload.targets:
+            name = t.strip().rsplit("\\", 1)[-1].rsplit("/", 1)[-1].lower()
+            if name and not _is_protected(name):
+                target_names.add(name)
+
+        # Also add linked app exe names as fallback (handles stale PIDs)
+        for a in list(_linked_apps):
+            exe_path = a.get('exe_path', '')
+            if exe_path:
+                name = exe_path.strip().rsplit("\\", 1)[-1].rsplit("/", 1)[-1].lower()
+                if name and not _is_protected(name):
+                    target_names.add(name)
+
+        print(f'[HRT] E-STOP: scanning for target_names={target_names}')
+
+        if target_names:
+            my_pid = __import__('os').getpid()
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    pname = (proc.info.get('name') or '').lower()
+                    pid = proc.info.get('pid')
+                    if pname in target_names and pid != my_pid and pid not in killed_pids:
+                        print(f'[HRT] E-STOP: killing name-match "{pname}" pid={pid}')
+                        r = _safe_kill(pid)
+                        r["source"] = "name_match"
+                        r["exe"] = pname
+                        results.append(r)
+                        print(f'[HRT] E-STOP:   result: {r}')
+                        if r.get("ok"):
+                            killed_pids.add(pid)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+
+        print(f'[HRT] E-STOP: done, killed_pids={killed_pids}')
+
+        # Remove killed apps from linked list to prevent re-kill floods
+        killed_names = set()
+        if killed_pids:
+            before = len(_linked_apps)
+            for a in _linked_apps:
+                if a.get('pid') in killed_pids:
+                    ep = a.get('exe_path', '')
+                    if ep:
+                        killed_names.add(ep.strip().rsplit('\\', 1)[-1].rsplit('/', 1)[-1].lower())
+            _linked_apps[:] = [a for a in _linked_apps if a.get('pid') not in killed_pids]
+            _save_linked()
+            print(f'[HRT] E-STOP: cleaned linked_apps {before} → {len(_linked_apps)}')
+        # Also add any name-match kills
+        for r in results:
+            if r.get('ok') and r.get('source') == 'name_match' and r.get('exe'):
+                killed_names.add(r['exe'].lower())
+
+        audit_event = {
+            'type': 'server_estop',
+            'timestamp': now_utc_iso(),
+            'targets': list(target_names),
+            'linked_apps_count': len(_linked_apps),
+            'results': results,
+        }
+        write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+
+        return {"ok": True, "killed_count": len(killed_pids), "results": results, "killed_names": sorted(killed_names)}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"ok": False, "error": str(e)}
+    finally:
+        # Always resume polling and release lock
+        try:
+            sensor_poller.resume()
+        except Exception:
+            pass
+        _estop_lock.release()
+
+
+def _safe_kill(pid: int) -> dict:
+    """Kill a single process by PID using psutil only (no taskkill subprocess).
+    Tries graceful terminate first, then force-kills after 3 seconds.
+    Refuses to kill HRT itself, HRT's parent, or any protected process."""
+    import os as _os
+    # ── EARLY BAIL: if PID doesn't exist, return immediately ──
+    # This prevents ANY psutil system calls on dead/reused PIDs.
+    # Critical for avoiding BSODs when LHM kernel driver is loaded.
+    if not psutil.pid_exists(pid):
+        print(f'[HRT] _safe_kill({pid}): already dead, bailing')
+        return {"pid": pid, "ok": True, "method": "already_dead", "children_killed": 0}
+    my_pid = _os.getpid()
+    if pid == my_pid:
+        return {"pid": pid, "ok": False, "error": "refused_self"}
+    # Guard: never kill our parent process
+    try:
+        my_parent = psutil.Process(my_pid).ppid()
+        if pid == my_parent:
+            return {"pid": pid, "ok": False, "error": "refused_parent"}
+    except Exception:
+        pass
+    try:
+        proc = psutil.Process(pid)
+        pname = (proc.name() or '').lower()
+        if _is_protected(pname):
+            return {"pid": pid, "ok": False, "error": f"protected:{pname}"}
+    except psutil.NoSuchProcess:
+        return {"pid": pid, "ok": True, "method": "already_dead", "children_killed": 0}
+    except psutil.AccessDenied:
+        pass  # still try
+
+    # Collect child processes BEFORE killing the main PID
+    # (Tauri/Electron apps spawn children that survive parent death)
+    children = []
+    try:
+        proc = psutil.Process(pid)
+        children = proc.children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+
+    # Kill non-protected children first
+    children_killed = 0
+    terminated_children = []
+    for child in children:
+        try:
+            cname = (child.name() or '').lower()
+            if _is_protected(cname):
+                continue
+            child.terminate()
+            terminated_children.append(child)
+            children_killed += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    # Give terminated children a moment to exit, then force-kill stragglers
+    if terminated_children:
+        try:
+            _, alive = psutil.wait_procs(terminated_children, timeout=2)
+            for c in alive:
+                try:
+                    c.kill()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except Exception:
+            pass
+
+    # Graceful terminate main process, then force kill if needed
+    try:
+        proc = psutil.Process(pid)
+        proc.terminate()  # sends WM_CLOSE / SIGTERM
+        try:
+            proc.wait(timeout=3)
+            return {"pid": pid, "ok": True, "method": "terminate", "children_killed": children_killed}
+        except psutil.TimeoutExpired:
+            proc.kill()  # force kill
+            proc.wait(timeout=3)
+            return {"pid": pid, "ok": True, "method": "kill", "children_killed": children_killed}
+    except psutil.NoSuchProcess:
+        return {"pid": pid, "ok": True, "method": "already_dead", "children_killed": children_killed}
+    except psutil.AccessDenied:
+        return {"pid": pid, "ok": False, "error": "access_denied", "children_killed": children_killed}
+    except Exception as e:
+        return {"pid": pid, "ok": False, "error": str(e), "children_killed": children_killed}
 
 
 @app.post('/kill')
@@ -409,6 +730,57 @@ def kill_process(payload: KillPayload):
     return result
 
 
+class KillPidPayload(BaseModel):
+    pid: int
+    actor: str = "unknown"
+    scope: str = "default"
+
+
+@app.post('/api/kill-pid')
+def kill_by_pid(payload: KillPidPayload):
+    """Kill a process by PID directly (used for linked-app e-stop)."""
+    result = {"ok": False, "error": "unknown"}
+    try:
+        proc = psutil.Process(payload.pid)
+        proc_name = proc.name()
+    except psutil.NoSuchProcess:
+        result = {"ok": False, "error": "no_such_process"}
+        _audit_kill_pid(payload, result)
+        return result
+    except psutil.AccessDenied:
+        proc_name = "unknown"
+
+    try:
+        proc = psutil.Process(payload.pid)
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+            result = {"ok": True, "killed": [payload.pid], "method": "terminate"}
+        except psutil.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=3)
+            result = {"ok": True, "killed": [payload.pid], "method": "kill"}
+    except psutil.NoSuchProcess:
+        result = {"ok": True, "killed": [payload.pid], "method": "already_dead"}
+    except Exception as e:
+        result = {"ok": False, "error": str(e)}
+
+    _audit_kill_pid(payload, result)
+    return result
+
+
+def _audit_kill_pid(payload, result):
+    audit_event = {
+        'type': 'governor_kill_pid',
+        'timestamp': now_utc_iso(),
+        'actor': payload.actor,
+        'scope': payload.scope,
+        'pid': payload.pid,
+        'result': result,
+    }
+    write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+
+
 def now_utc_iso():
     return datetime.now(timezone.utc).isoformat()
 
@@ -420,12 +792,12 @@ def write_audit_event(log_path: Path, event: dict):
 
 
 def _kill_by_path(path: str, dry_run: bool = True):
-    target = Path(path).resolve()
+    target = str(Path(path).resolve()).lower()
     matches = []
     for p in psutil.process_iter(['pid', 'exe']):
         try:
             exe = p.info.get('exe') or ''
-            if exe and Path(exe).resolve() == target:
+            if exe and str(Path(exe).resolve()).lower() == target:
                 matches.append(p.info['pid'])
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
@@ -438,8 +810,14 @@ def _kill_by_path(path: str, dry_run: bool = True):
         try:
             proc = psutil.Process(pid)
             proc.terminate()
-            proc.wait(timeout=5)
+            try:
+                proc.wait(timeout=3)
+            except psutil.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
             killed.append(pid)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-    return {"ok": True, "killed": killed}
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    if killed:
+        return {"ok": True, "killed": killed}
+    return {"ok": False, "error": "all_kill_attempts_failed"}

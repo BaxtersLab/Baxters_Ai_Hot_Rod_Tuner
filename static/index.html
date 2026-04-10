@@ -42,6 +42,8 @@
   .dot { width:6px; height:6px; border-radius:50%; display:inline-block; }
   .dot.ok { background: var(--green); }
   .dot.err { background: var(--red); }
+  .dot.reconn { background: var(--accent); animation: beacon 1.5s ease-in-out infinite; }
+  @keyframes beacon { 0%,100%{ opacity:.25; } 50%{ opacity:1; } }
 
   /* ── Alert banner ── */
   .alert-bar {
@@ -55,27 +57,31 @@
 
   /* ── Sensor lanes (main content) ── */
   .lanes { flex: 1; overflow-y: auto; padding: 4px 6px; }
+  .lane-group { margin-bottom: 2px; }
   .lane {
     display: flex; align-items: center; gap: 4px;
-    margin-bottom: 3px;
   }
   .lane-label {
-    width: 72px; font-size: 9px; color: var(--dim);
+    width: 40px; font-size: 9px; color: var(--dim);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     flex-shrink: 0;
   }
   .lane-bar-wrap {
-    flex: 1; height: 10px; background: var(--bar-bg); border-radius: 2px;
+    flex: 1; height: 4px; background: var(--bar-bg); border-radius: 2px;
     overflow: hidden; position: relative;
   }
+  .lane-bar-wrap.temp { height: 4px; margin-top: 1px; }
   .lane-bar-fill {
     height: 100%; border-radius: 2px; transition: width .4s, background .4s;
     min-width: 0;
   }
   .lane-val {
-    width: 38px; font-size: 9px; text-align: right; font-weight: 600;
+    width: 38px; font-size: 8px; text-align: right; font-weight: 600;
     flex-shrink: 0; font-variant-numeric: tabular-nums;
   }
+  .lane-val.temp { font-size: 7px; }
+  /* Spacer to align temp row under bar (no label) */
+  .lane-spacer { width: 40px; flex-shrink: 0; }
 
   /* ── Bottom toolbar ── */
   .toolbar {
@@ -181,7 +187,7 @@
 
 <!-- Settings drop-up (above toolbar) -->
 <div class="dropup" id="dropup">
-  <h4>Thresholds °C</h4>
+  <h4>CPU Thresholds °C</h4>
   <div class="thresh-row"><div class="thresh-dot yellow"></div><label>Warn</label>
     <input type="number" id="thYellow" value="70" min="30" max="120" step="1"><span class="unit">°C</span></div>
   <div class="thresh-row"><div class="thresh-dot orange"></div><label>Throttle</label>
@@ -189,10 +195,18 @@
   <div class="thresh-row"><div class="thresh-dot red"></div><label>E-Stop</label>
     <input type="number" id="thRed" value="95" min="30" max="120" step="1"><span class="unit">°C</span></div>
 
+  <h4>GPU Thresholds °C</h4>
+  <div class="thresh-row"><div class="thresh-dot yellow"></div><label>Warn</label>
+    <input type="number" id="thGpuYellow" value="75" min="30" max="120" step="1"><span class="unit">°C</span></div>
+  <div class="thresh-row"><div class="thresh-dot orange"></div><label>Throttle</label>
+    <input type="number" id="thGpuOrange" value="85" min="30" max="120" step="1"><span class="unit">°C</span></div>
+  <div class="thresh-row"><div class="thresh-dot red"></div><label>E-Stop</label>
+    <input type="number" id="thGpuRed" value="97" min="30" max="120" step="1"><span class="unit">°C</span></div>
+
   <h4>Process Tray</h4>
   <div id="procList"></div>
   <div class="proc-add">
-    <input id="procInput" placeholder="C:\path\to\app.exe" spellcheck="false"/>
+    <input id="procInput" placeholder="app.exe" spellcheck="false"/>
     <button id="procAddBtn">+</button>
   </div>
 
@@ -217,10 +231,11 @@
 
 // ── State ───────────────────────────────────────────────────────────
 let ws = null;
-let lanes = {};          // name -> {row, fill, valEl}
 let processes = [];      // [{path, running}]
 let audioCtx = null;
 let currentAlertLevel = "none";
+let lastSensors = [];    // last received sensor array for re-evaluation
+let lastWsTime = 0;      // timestamp of last WS message
 
 const STORE_KEY = "hrt_processes";
 const THRESH_KEY = "hrt_thresholds";
@@ -232,22 +247,33 @@ function getThresholds() {
     yellow: parseFloat(document.getElementById("thYellow").value) || 70,
     orange: parseFloat(document.getElementById("thOrange").value) || 82,
     red:    parseFloat(document.getElementById("thRed").value) || 95,
+    gpuYellow: parseFloat(document.getElementById("thGpuYellow").value) || 75,
+    gpuOrange: parseFloat(document.getElementById("thGpuOrange").value) || 85,
+    gpuRed:    parseFloat(document.getElementById("thGpuRed").value) || 97,
   };
 }
-function saveThresholds() { localStorage.setItem(THRESH_KEY, JSON.stringify(getThresholds())); }
+function saveThresholds() {
+  localStorage.setItem(THRESH_KEY, JSON.stringify(getThresholds()));
+  // Re-evaluate with last known data (don't reset level — let checkAlerts handle transitions)
+  if (lastSensors.length > 0) checkAlerts(lastSensors);
+}
+// Restore saved thresholds into the inputs immediately (DOM exists above this script)
 try {
   const t = JSON.parse(localStorage.getItem(THRESH_KEY));
   if (t) {
-    document.addEventListener("DOMContentLoaded", () => {
-      if (t.yellow) document.getElementById("thYellow").value = t.yellow;
-      if (t.orange) document.getElementById("thOrange").value = t.orange;
-      if (t.red)    document.getElementById("thRed").value = t.red;
-    });
+    if (t.yellow != null) document.getElementById("thYellow").value = t.yellow;
+    if (t.orange != null) document.getElementById("thOrange").value = t.orange;
+    if (t.red    != null) document.getElementById("thRed").value = t.red;
+    if (t.gpuYellow != null) document.getElementById("thGpuYellow").value = t.gpuYellow;
+    if (t.gpuOrange != null) document.getElementById("thGpuOrange").value = t.gpuOrange;
+    if (t.gpuRed    != null) document.getElementById("thGpuRed").value = t.gpuRed;
   }
 } catch(e) {}
-document.getElementById("thYellow").addEventListener("change", saveThresholds);
-document.getElementById("thOrange").addEventListener("change", saveThresholds);
-document.getElementById("thRed").addEventListener("change", saveThresholds);
+// Save on both input (immediate as user types) and change (spinner arrows, blur)
+for (const id of ["thYellow", "thOrange", "thRed", "thGpuYellow", "thGpuOrange", "thGpuRed"]) {
+  document.getElementById(id).addEventListener("input", saveThresholds);
+  document.getElementById(id).addEventListener("change", saveThresholds);
+}
 
 // ── Settings drop-up toggle ─────────────────────────────────────────
 document.getElementById("gearBtn").addEventListener("click", () => {
@@ -268,27 +294,34 @@ function connectWs() {
     document.getElementById("connText").textContent = "Live";
   };
   ws.onclose = () => {
-    document.getElementById("connDot").className = "dot err";
-    document.getElementById("connText").textContent = "…";
-    setTimeout(connectWs, 2000);
+    document.getElementById("connDot").className = "dot reconn";
+    document.getElementById("connText").textContent = "";
+    setTimeout(connectWs, 60000);
   };
   ws.onerror = () => ws.close();
   ws.onmessage = (ev) => {
     try {
       const snap = JSON.parse(ev.data);
-      updateLanes(snap.sensors || []);
-      checkAlerts(snap.sensors || []);
+      lastSensors = snap.sensors || [];
+      lastWsTime = Date.now();
+      updateLanes(lastSensors);
+      checkAlerts(lastSensors);
     } catch(e) {}
   };
 }
 
 // ── Flat bar lanes ──────────────────────────────────────────────────
+function isGpuSensor(s) { return s.name.includes("gpu"); }
 function barColor(s) {
   const th = getThresholds();
   if (s.category === "temperature") {
-    if (s.value >= th.red) return "#ef4444";
-    if (s.value >= th.orange) return "#f97316";
-    if (s.value >= th.yellow) return "#eab308";
+    const g = isGpuSensor(s);
+    const red = g ? th.gpuRed : th.red;
+    const orange = g ? th.gpuOrange : th.orange;
+    const yellow = g ? th.gpuYellow : th.yellow;
+    if (s.value >= red) return "#ef4444";
+    if (s.value >= orange) return "#f97316";
+    if (s.value >= yellow) return "#eab308";
     return "#22c55e";
   }
   if (s.unit === "%") {
@@ -300,94 +333,212 @@ function barColor(s) {
   return "#38bdf8";
 }
 
-function getOrCreateLane(s) {
-  if (lanes[s.name]) return lanes[s.name];
-  const panel = document.getElementById("lanePanel");
-  const row = document.createElement("div");
-  row.className = "lane";
+// Map: groupKey -> { group(dom), usageFill, usageVal, tempFill, tempVal, tempRow }
+let laneGroups = {};
 
+// Derive a group key: cpu_core_0_usage -> cpu_core_0, gpu_0_temp -> gpu_0
+function groupKey(s) {
+  return s.name.replace(/_(usage|temp)$/, "");
+}
+function friendlyLabel(key) {
+  if (key.startsWith("cpu_core_")) return "CPU " + key.replace("cpu_core_", "");
+  if (key === "cpu_total") return "CPU Total";
+  if (key.startsWith("gpu_")) return "GPU " + key.replace("gpu_", "");
+  if (key === "ram") return "RAM";
+  return key;
+}
+
+function getOrCreateGroup(key) {
+  if (laneGroups[key]) return laneGroups[key];
+  const panel = document.getElementById("lanePanel");
+  const grp = document.createElement("div");
+  grp.className = "lane-group";
+
+  // Usage row
+  const uRow = document.createElement("div");
+  uRow.className = "lane";
   const lbl = document.createElement("div");
   lbl.className = "lane-label";
-  lbl.title = s.label || s.name;
-  lbl.textContent = s.label || s.name;
+  lbl.textContent = friendlyLabel(key);
+  lbl.title = key;
+  const uWrap = document.createElement("div");
+  uWrap.className = "lane-bar-wrap";
+  const uFill = document.createElement("div");
+  uFill.className = "lane-bar-fill";
+  uWrap.appendChild(uFill);
+  const uVal = document.createElement("div");
+  uVal.className = "lane-val";
+  uRow.appendChild(lbl);
+  uRow.appendChild(uWrap);
+  uRow.appendChild(uVal);
+  grp.appendChild(uRow);
 
-  const wrap = document.createElement("div");
-  wrap.className = "lane-bar-wrap";
-  const fill = document.createElement("div");
-  fill.className = "lane-bar-fill";
-  wrap.appendChild(fill);
+  // Temp row (hidden until data arrives)
+  const tRow = document.createElement("div");
+  tRow.className = "lane";
+  tRow.style.display = "none";
+  const spacer = document.createElement("div");
+  spacer.className = "lane-spacer";
+  const tWrap = document.createElement("div");
+  tWrap.className = "lane-bar-wrap temp";
+  const tFill = document.createElement("div");
+  tFill.className = "lane-bar-fill";
+  tWrap.appendChild(tFill);
+  const tVal = document.createElement("div");
+  tVal.className = "lane-val temp";
+  tRow.appendChild(spacer);
+  tRow.appendChild(tWrap);
+  tRow.appendChild(tVal);
+  grp.appendChild(tRow);
 
-  const val = document.createElement("div");
-  val.className = "lane-val";
-
-  row.appendChild(lbl);
-  row.appendChild(wrap);
-  row.appendChild(val);
-  panel.appendChild(row);
-
-  const l = { row, fill, valEl: val, lblEl: lbl };
-  lanes[s.name] = l;
-  return l;
+  panel.appendChild(grp);
+  const entry = { grp, uFill, uVal, tFill, tVal, tRow, lbl };
+  laneGroups[key] = entry;
+  return entry;
 }
 
 function updateLanes(sensors) {
   for (const s of sensors) {
-    const l = getOrCreateLane(s);
-    let maxVal = 100;
-    if (s.unit === "°C") maxVal = 110;
-    else if (s.unit === "RPM") maxVal = Math.max(s.value * 1.3, 3000);
-    else if (s.unit === "MHz") maxVal = Math.max(s.value * 1.3, 5000);
-
-    const pct = Math.min((s.value / maxVal) * 100, 100);
-    const color = barColor(s);
-    l.fill.style.width = pct + "%";
-    l.fill.style.background = color;
-    l.valEl.textContent = s.value.toFixed(s.unit === "%" ? 0 : 1) + s.unit;
-    l.valEl.style.color = color;
+    const key = groupKey(s);
+    const g = getOrCreateGroup(key);
+    if (s.category === "temperature") {
+      const maxVal = 110;
+      const pct = Math.min((s.value / maxVal) * 100, 100);
+      const color = barColor(s);
+      g.tFill.style.width = pct + "%";
+      g.tFill.style.background = color;
+      g.tVal.textContent = s.value.toFixed(1) + "°C";
+      g.tVal.style.color = color;
+      g.tRow.style.display = "flex";
+    } else if (s.unit === "%") {
+      const pct = Math.min(s.value, 100);
+      const color = barColor(s);
+      g.uFill.style.width = pct + "%";
+      g.uFill.style.background = color;
+      g.uVal.textContent = s.value.toFixed(0) + "%";
+      g.uVal.style.color = color;
+    } else {
+      let maxVal = 100;
+      if (s.unit === "RPM") maxVal = Math.max(s.value * 1.3, 3000);
+      else if (s.unit === "MHz") maxVal = Math.max(s.value * 1.3, 5000);
+      const pct = Math.min((s.value / maxVal) * 100, 100);
+      const color = barColor(s);
+      g.uFill.style.width = pct + "%";
+      g.uFill.style.background = color;
+      g.uVal.textContent = s.value.toFixed(1) + s.unit;
+      g.uVal.style.color = color;
+    }
   }
 }
 
 // ── Alert logic ─────────────────────────────────────────────────────
+function _levelFor(temp, warn, throttle, estop) {
+  if (temp >= estop) return "red";
+  if (temp >= throttle) return "orange";
+  if (temp >= warn) return "yellow";
+  return "none";
+}
 function checkAlerts(sensors) {
   const th = getThresholds();
-  let maxTemp = 0;
+  let maxCpu = 0, maxGpu = 0;
   for (const s of sensors) {
-    if (s.category === "temperature" && s.value > maxTemp) maxTemp = s.value;
+    if (s.category !== "temperature") continue;
+    if (isGpuSensor(s)) { if (s.value > maxGpu) maxGpu = s.value; }
+    else { if (s.value > maxCpu) maxCpu = s.value; }
   }
-  let level = "none";
-  if (maxTemp >= th.red) level = "red";
-  else if (maxTemp >= th.orange) level = "orange";
-  else if (maxTemp >= th.yellow) level = "yellow";
+  const cpuLevel = _levelFor(maxCpu, th.yellow, th.orange, th.red);
+  const gpuLevel = _levelFor(maxGpu, th.gpuYellow, th.gpuOrange, th.gpuRed);
+  console.log(`[HRT-ALERT] maxCpu=${maxCpu.toFixed(1)} cpuLevel=${cpuLevel} (th:${th.yellow}/${th.orange}/${th.red})  maxGpu=${maxGpu.toFixed(1)} gpuLevel=${gpuLevel} (th:${th.gpuYellow}/${th.gpuOrange}/${th.gpuRed})`);
+  // Fire e-stop if EITHER sensor type hits red (independent checks)
+  const cpuRed = cpuLevel === "red";
+  const gpuRed = gpuLevel === "red";
+  // Use the worse of the two for bar display
+  const rank = { none: 0, yellow: 1, orange: 2, red: 3 };
+  const level = rank[cpuLevel] >= rank[gpuLevel] ? cpuLevel : gpuLevel;
+  const hotLabel = rank[cpuLevel] >= rank[gpuLevel]
+    ? (maxCpu > 0 ? `CPU ${maxCpu.toFixed(0)}°C` : "")
+    : `GPU ${maxGpu.toFixed(0)}°C`;
 
   const bar = document.getElementById("alertBar");
   if (level === "none") { bar.className = "alert-bar"; currentAlertLevel = "none"; return; }
   if (level !== currentAlertLevel) {
     bar.className = "alert-bar show " + level;
-    if (level === "yellow") { bar.textContent = `⚠ ${maxTemp.toFixed(0)}°C`; playBeep(660, 0.12); }
-    else if (level === "orange") { bar.textContent = `🔶 THROTTLE ${maxTemp.toFixed(0)}°C`; playBeep(880, 0.2); sendThrottle(); }
-    else if (level === "red") { bar.textContent = `🛑 E-STOP ${maxTemp.toFixed(0)}°C`; playBeep(1100, 0.35); triggerEstop(); }
+    if (level === "yellow") { bar.textContent = `⚠ ${hotLabel}`; playBeep(660, 0.12); }
+    else if (level === "orange") { bar.textContent = `🔶 THROTTLE ${hotLabel}`; playBeep(880, 0.2); sendThrottle(); }
+    else if (level === "red") {
+      bar.textContent = `🛑 E-STOP ${hotLabel}`;
+      playBeep(1100, 0.35);
+      console.log(`[HRT-ALERT] FIRING E-STOP  cpuRed=${cpuRed} gpuRed=${gpuRed}`);
+      triggerEstop();
+    }
     currentAlertLevel = level;
   }
+  // Once red, STAY red — never auto-clear. User must reset manually.
+  if (currentAlertLevel === "red") return;
 }
 function playBeep(f, d) {
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
     const o = audioCtx.createOscillator(), g = audioCtx.createGain();
     o.connect(g); g.connect(audioCtx.destination);
     o.frequency.value = f; g.gain.value = 0.25;
     o.start(); o.stop(audioCtx.currentTime + d);
   } catch(e) {}
 }
+// Unlock AudioContext on first user gesture so beeps work
+document.addEventListener("click", function _unlockAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  document.removeEventListener("click", _unlockAudio);
+}, { once: true });
 
 // ── E-Stop ──────────────────────────────────────────────────────────
-document.getElementById("estopBtn").addEventListener("click", () => {
-  if (confirm("E-STOP all monitored processes?")) triggerEstop();
-});
-function triggerEstop() {
-  for (const p of processes) {
-    fetch("/api/kill", { method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({path:p.path, dry_run:false, actor:"hrt-gui", scope:"estop"})
-    }).catch(()=>{});
+document.getElementById("estopBtn").addEventListener("click", () => triggerEstop());
+let _estopCooldown = false;
+async function triggerEstop() {
+  // Debounce: only allow one e-stop call every 15 seconds
+  if (_estopCooldown) { console.log("[HRT] E-STOP skipped (cooldown)"); return; }
+  _estopCooldown = true;
+  setTimeout(() => { _estopCooldown = false; }, 30000);  // 30s cooldown to prevent kill floods
+  console.log("[HRT] E-STOP triggered");
+  const bar = document.getElementById("alertBar");
+  bar.className = "alert-bar show red";
+  bar.textContent = "🛑 E-STOP KILLING...";
+  // Collect process tray targets
+  const targets = processes.map(p => p.path);
+  console.log("[HRT] E-STOP targets:", targets, "processTrayCount:", processes.length);
+  try {
+    const res = await fetch("/api/estop", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({targets})
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error("[HRT] E-STOP server error:", res.status, text);
+      bar.textContent = `🛑 E-STOP ERROR ${res.status}`;
+      setTimeout(() => { bar.className = "alert-bar"; currentAlertLevel = "none"; }, 5000);
+      return;
+    }
+    const data = await res.json();
+    console.log("[HRT] E-STOP result:", data);
+    const n = data.killed_count || 0;
+    bar.textContent = n > 0 ? `🛑 E-STOP: killed ${n} process${n > 1 ? "es" : ""}` : "🛑 E-STOP: no targets found";
+    currentAlertLevel = "red";
+    // Remove killed processes from tray so a second E-STOP has no targets
+    if (data.killed_names && data.killed_names.length > 0) {
+      const kn = new Set(data.killed_names.map(s => s.toLowerCase()));
+      const before = processes.length;
+      processes = processes.filter(p => !kn.has(basename(p.path).toLowerCase()));
+      if (processes.length !== before) { saveProcesses(); renderProcesses(); }
+      console.log(`[HRT] Removed ${before - processes.length} killed processes from tray`);
+    }
+    // Do NOT auto-clear — stay red until manual reset to prevent re-trigger flood
+  } catch(e) {
+    console.error("[HRT] E-STOP fetch failed:", e);
+    bar.textContent = "🛑 E-STOP FAILED";
+    setTimeout(() => { bar.className = "alert-bar"; currentAlertLevel = "none"; }, 5000);
   }
 }
 function sendThrottle() { console.log("Throttle threshold reached"); }
@@ -415,9 +566,22 @@ function renderProcesses() {
 }
 document.getElementById("procAddBtn").addEventListener("click", addProc);
 document.getElementById("procInput").addEventListener("keydown", e => { if (e.key === "Enter") addProc(); });
+// Protected process names that cannot be added to the kill list
+const PROTECTED = new Set([
+  "system","smss.exe","csrss.exe","wininit.exe","winlogon.exe","services.exe",
+  "lsass.exe","svchost.exe","dwm.exe","conhost.exe","explorer.exe",
+  "taskhostw.exe","sihost.exe","runtimebroker.exe","ctfmon.exe","dllhost.exe",
+  "cmd.exe","powershell.exe","pwsh.exe","windowsterminal.exe","wt.exe",
+  "msedge.exe","msedgewebview2.exe","ntoskrnl.exe","audiodg.exe","spoolsv.exe",
+  "securityhealthservice.exe","msmpeng.exe","nissrv.exe",
+  "hot rod tuner.exe","searchhost.exe","fontdrvhost.exe"
+]);
 function addProc() {
   const inp = document.getElementById("procInput"), v = inp.value.trim();
-  if (!v || processes.some(p => p.path.toLowerCase() === v.toLowerCase())) return;
+  if (!v) return;
+  const name = v.split(/[\\/]/).pop().toLowerCase();
+  if (PROTECTED.has(name)) { alert("⚠ " + name + " is a protected system process and cannot be added."); return; }
+  if (processes.some(p => p.path.toLowerCase() === v.toLowerCase())) return;
   processes.push({path:v, running:false}); saveProcesses(); renderProcesses(); inp.value = "";
 }
 async function refreshProcStatus() {
@@ -467,11 +631,6 @@ window.addEventListener('beforeunload', (e) => {
   e.returnValue = '';                          // triggers browser close dialog
 });
 
-// When the page actually unloads, tell the server to shut down
-window.addEventListener('unload', () => {
-  navigator.sendBeacon('/api/shutdown');
-});
-
 // ── Reset (blue title button) ───────────────────────────────────────
 function resetApp() {
   // 1. Close existing WebSocket
@@ -479,7 +638,7 @@ function resetApp() {
 
   // 2. Clear all sensor lanes
   document.getElementById("lanePanel").innerHTML = "";
-  lanes = {};
+  laneGroups = {};
 
   // 3. Clear alert banner
   currentAlertLevel = "none";
@@ -513,7 +672,16 @@ document.querySelector(".titlebar .logo").addEventListener("click", resetApp);
 // ── Init ────────────────────────────────────────────────────────────
 renderProcesses();
 connectWs();
-setInterval(refreshProcStatus, 3000);
+setInterval(() => { refreshProcStatus(); refreshLinked(); }, 3000);
+// Watchdog: if no WS data for 60s, reconnect quietly
+setInterval(() => {
+  if (lastWsTime > 0 && Date.now() - lastWsTime > 60000) {
+    document.getElementById("connDot").className = "dot reconn";
+    document.getElementById("connText").textContent = "";
+    if (ws) { try { ws.onclose = null; ws.close(); } catch(e) {} ws = null; }
+    connectWs();
+  }
+}, 60000);
 
 // ── Sound folder button + label ─────────────────────────────────────
 document.getElementById("soundFolderBtn").addEventListener("click", () => {

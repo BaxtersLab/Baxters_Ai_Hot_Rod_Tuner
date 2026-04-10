@@ -1,1075 +1,375 @@
-# Baxter's AI Hot Rod Tuner - Standalone Manual
+# Baxter's AI Hot Rod Tuner — User Manual
 
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [System Requirements](#system-requirements)
 3. [Installation](#installation)
 4. [Quick Start](#quick-start)
-5. [Core Features](#core-features)
-6. [Telemetry Collection](#telemetry-collection)
-7. [Policy Engine](#policy-engine)
-8. [Job Scheduling](#job-scheduling)
-9. [Thermal Management](#thermal-management)
-10. [Sound System](#sound-system)
-11. [API Reference](#api-reference)
-12. [Configuration](#configuration)
-13. [Monitoring and Logging](#monitoring-and-logging)
-14. [Troubleshooting](#troubleshooting)
-15. [Advanced Usage](#advanced-usage)
+5. [Dashboard Guide](#dashboard-guide)
+6. [Temperature Thresholds](#temperature-thresholds)
+7. [E-Stop & Process Kill](#e-stop--process-kill)
+8. [App Linking](#app-linking)
+9. [Sound System](#sound-system)
+10. [Troubleshooting](#troubleshooting)
+11. [Developer API Reference](#developer-api-reference)
 
 ---
 
 ## Introduction
 
-### What is Baxter's AI Hot Rod Tuner?
+Baxter's AI Hot Rod Tuner (HRT) is a compact, always-on hardware monitor for Windows. It sits in the bottom-right corner of your screen and shows real-time CPU, GPU, and RAM usage alongside temperatures. When things get too hot, it warns you with audible beeps and can automatically kill processes to protect your hardware.
 
-Baxter's AI Hot Rod Tuner is a lightweight governor service designed to protect homelab hardware while enabling strong local AI workflows. It acts as a sophisticated system governor that mediates heavy AI workloads, ensuring hardware safety and maintaining predictable performance.
+HRT is designed for homelab users running heavy AI workloads — local LLMs, image generators, training jobs — where thermal runaway is a real risk and you want a kill switch that acts faster than you can.
 
-### Purpose and Philosophy
-
-The Hot Rod Tuner serves as a "responsible adult" for your AI hardware:
-- **Hardware Protection**: Prevents overheating and system instability
-- **Performance Optimization**: Maintains optimal system performance
-- **Resource Governance**: Ensures fair resource allocation
-- **Audit Compliance**: Complete audit trail of all decisions
-
-### Key Benefits
-
-- **Hardware Safety**: Automatic protection against thermal runaway
-- **Performance Stability**: Consistent performance during AI workloads
-- **Resource Efficiency**: Optimal resource utilization
-- **Operational Visibility**: Complete audit trail and monitoring
-- **Easy Integration**: RESTful API for seamless integration
-
-### Architecture Overview
-
-The Hot Rod Tuner consists of several interconnected components:
-
-- **Telemetry Collector**: Gathers system metrics and sensor data
-- **Metrics Store**: Time-series buffer with rolling aggregates
-- **Decision Engine**: Evaluates telemetry against policies
-- **Scheduler**: Enforces fairness and cooldown windows
-- **Enforcement Layer**: Executes protection and optimization actions
-- **Audit System**: Complete logging of all decisions and actions
+### What It Does
+- Monitors every CPU core (usage + temperature) and GPU (usage + temperature)
+- Three-tier alert system: Warning, Throttle, E-Stop
+- Automatic process termination when temps breach the E-Stop threshold
+- Links with other Baxter apps (AiSmartGuy, GGUF Chatbox) so HRT can kill them remotely
+- Single-instance enforcement — only one HRT can run at a time
 
 ---
 
 ## System Requirements
 
-### Minimum Requirements
-- **Operating System**: Windows 10/11, Linux (Ubuntu 18.04+), macOS 10.15+
-- **RAM**: 4GB minimum, 8GB recommended
-- **Storage**: 1GB free space
-- **Network**: Local network access (for API access)
-- **Python**: 3.8 or higher
-
-### Recommended Requirements
-- **RAM**: 16GB or more for heavy AI workloads
-- **Storage**: SSD with 5GB+ free space
-- **CPU**: Multi-core processor (4+ cores)
-- **Cooling**: Adequate system cooling for sustained workloads
-
-### Supported Platforms
-
-#### Windows
-- Full hardware monitoring support via LibreHardwareMonitor
-- Native Windows API integration
-- Sound system support
-
-#### Linux
-- `/sys` interface for hardware monitoring
-- `lm-sensors` integration
-- ALSA sound system support
-
-#### macOS
-- IOKit framework integration
-- Native macOS sensor APIs
-- Core Audio sound support
+- **OS:** Windows 10 or 11
+- **CPU:** Any multi-core processor
+- **RAM:** 2 GB free (HRT itself uses ~50 MB)
+- **GPU monitoring:** NVIDIA GPU with nvidia-smi on PATH, or any GPU visible to LibreHardwareMonitor
+- **Browser engine:** Microsoft Edge (used internally for the GUI window)
+- **Admin privileges:** Required on first launch so LibreHardwareMonitor can read hardware sensors
 
 ---
 
 ## Installation
 
-### Step 1: Download and Extract
+### End Users (exe)
 
-1. Download the Baxter's AI Hot Rod Tuner package
-2. Extract to a dedicated directory:
+1. Download the release package.
+2. Place the folder anywhere on your system. Example:
    ```
-   C:\BaxtersApps\HotRodTuner\  (Windows)
-   /opt/baxters/hotrod-tuner/   (Linux/macOS)
+   C:\BaxtersApps\Hot Rod Tuner\
+   ```
+3. Inside the folder you need:
+   ```
+   Hot Rod Tuner.exe
+   assets\              (sound files go here, optional)
+   ```
+4. Double-click **Hot Rod Tuner.exe** to launch.
+5. Windows may prompt for admin elevation (required for temperature sensors). Click Yes.
+
+### Developers (from source)
+
+1. Clone the repository.
+2. Install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+3. Run:
+   ```
+   run.bat
+   ```
+   Or manually:
+   ```
+   set PYTHONPATH=src
+   python run_server.py
    ```
 
-### Step 2: Install Dependencies
+### Building the Exe
 
-```bash
-cd hotrod-tuner-directory
-pip install -r requirements.txt
 ```
-
-#### Optional Dependencies
-
-For enhanced hardware monitoring:
-
-**Windows:**
-```bash
-pip install pywin32
+python -m PyInstaller "Hot Rod Tuner.spec" --noconfirm
 ```
-
-**Linux:**
-```bash
-sudo apt-get install lm-sensors
-pip install psutil
-```
-
-### Step 3: Configure Sound Files (Optional)
-
-Create the signature race car engine sound experience:
-
-1. Create directory: `HRT wav sound file/`
-2. Place sound file: `engine.wav`
-3. Format: WAV, 44.1kHz, stereo, reasonable file size
-
-### Step 4: Initial Configuration
-
-Edit `config.yaml` or set environment variables:
-
-```yaml
-# Basic configuration
-port: 8080
-log_level: info
-telemetry_interval: 5
-max_concurrent_jobs: 3
-
-# Hardware limits
-cpu_limit: 80
-memory_limit: 85
-temp_limit: 75
-```
+Output lands in `dist/Hot Rod Tuner.exe`. Copy the `assets/` folder next to it before distributing.
 
 ---
 
 ## Quick Start
 
-### Basic Operation
+1. Run **Hot Rod Tuner.exe**.
+2. A splash screen appears briefly, then a compact window opens in the bottom-right corner.
+3. A startup sound plays (if a .wav file is in the assets/ folder).
+4. Live sensor bars begin streaming within 1-2 seconds.
 
-1. **Start the Service:**
-   ```bash
-   python run_server.py
+That's it. HRT is now monitoring your hardware.
+
+---
+
+## Dashboard Guide
+
+The HRT window is a narrow 200x450 pixel panel. From top to bottom:
+
+### Title Bar
+
+| Element | What It Does |
+|---------|--------------|
+| **HRT** (blue text, left side) | **Reset button.** Click this to completely reset the dashboard. It disconnects the data stream, clears all sensor bars, dismisses any active alert, plays the startup sound, and reconnects from scratch. **Use this whenever the app appears frozen or stops updating.** |
+| **Green/Red dot + text** (right side) | Connection status. Green "Live" = data streaming. Red = disconnected (auto-reconnects every 2 seconds). "Reconnecting..." = watchdog detected a stale connection and is recovering. |
+
+> **Important:** The HRT button is the only non-obvious control in the app. It is NOT just a logo — it is your manual recovery button. If the app freezes or bars stop moving, click it.
+
+### Sensor Lanes (main area)
+
+The scrollable center of the window shows one group per hardware component:
+
+- **Top bar** — Usage (%, green/yellow/orange/red based on load)
+- **Bottom bar** — Temperature (degrees C, colored by your threshold settings)
+
+Each group is labeled on the left:
+
+| Label | Meaning |
+|-------|---------|
+| CPU 0 through CPU 11 | Individual CPU cores (logical cores, including hyperthreads) |
+| CPU Total | Overall CPU usage |
+| GPU 0 | Primary GPU |
+| RAM | System memory usage |
+
+Bar colors change dynamically based on temperature thresholds (see next section).
+
+### Alert Banner
+
+When a temperature threshold is breached, a colored banner slides in below the title bar:
+
+| Color | Level | What Happens |
+|-------|-------|--------------|
+| Yellow | **Warning** | Banner shows temp reading. Short beep. |
+| Orange | **Throttle** | Banner shows "THROTTLE" + temp. Louder beep. |
+| Red | **E-Stop** | Banner shows "E-STOP" + temp. Alarm beep. All monitored and linked processes are automatically killed. |
+
+The banner shows which component triggered it (e.g. "CPU 78C" or "GPU 92C"). The alert fires immediately when temps cross the threshold — no delay.
+
+### Bottom Toolbar
+
+| Button | Function |
+|--------|----------|
+| **E-STOP** | Manual emergency stop. Asks for confirmation, then kills all Process Tray entries and Linked Apps. |
+| **Gear icon** | Opens/closes the Settings panel. |
+
+### Settings Panel
+
+Click the gear icon to expand. The panel drops up from the toolbar and contains five sections:
+
+#### CPU Thresholds (degrees C)
+Three inputs: **Warn**, **Throttle**, **E-Stop**. Default: 70 / 82 / 95.
+Changes take effect instantly. If current temps already exceed a new threshold, the alert fires immediately.
+
+#### GPU Thresholds (degrees C)
+Same three tiers. Default: 75 / 85 / 97.
+
+#### Process Tray
+Manually add exe paths (e.g. C:\path\to\heavy_app.exe). These processes are:
+- Shown with a green/grey dot indicating whether they are currently running
+- Killed when E-Stop fires (manual or automatic)
+
+Click the X button to remove an entry. Entries persist in browser localStorage across sessions.
+
+#### Linked Apps
+Shows external apps that registered themselves with HRT via the /link API (e.g. AiSmartGuy, GGUF Chatbox). These appear automatically — you do not add them manually. Each entry shows the app name and PID. Linked apps are killed on E-Stop just like Process Tray entries.
+
+#### Sound
+- **Sound Folder button** — Opens the assets/ folder in Explorer. Drop any .wav file here. The first .wav file found is used as the startup and reset sound.
+- Shows the current sound file name, or "No .wav file found".
+
+### Close Behavior
+
+- If any processes are in the tray or linked, a confirmation dialog asks if you really want to close.
+- When the window closes, the server shuts down automatically.
+
+---
+
+## Temperature Thresholds
+
+### How They Work
+
+HRT checks every sensor reading once per second against your thresholds. The highest CPU core temp is compared against CPU thresholds. The highest GPU temp is compared against GPU thresholds. The worse of the two determines the overall alert level.
+
+| Threshold | Default (CPU) | Default (GPU) | Effect |
+|-----------|---------------|---------------|--------|
+| Warn | 70C | 75C | Yellow banner + beep |
+| Throttle | 82C | 85C | Orange banner + louder beep |
+| E-Stop | 95C | 97C | Red banner + alarm + automatic process kill |
+
+### Changing Thresholds
+
+Open Settings (gear icon), adjust the number inputs. Changes are saved to localStorage and persist across restarts. The alert system re-evaluates instantly when you change a value — if your current temps already exceed the new threshold, the alert fires immediately without waiting for the next sensor tick.
+
+### Testing Thresholds
+
+To test without actually overheating your system: lower the E-Stop threshold to just below your current CPU or GPU temperature. The red alert should fire immediately, and any linked or monitored processes should be terminated.
+
+---
+
+## E-Stop & Process Kill
+
+### What Gets Killed
+
+When E-Stop fires (automatically from temperature or manually via the E-STOP button):
+
+1. **Linked Apps** — killed by PID first (fast, reliable), then by exe path (catches new instances)
+2. **Process Tray entries** — killed by exe path matching
+
+HRT does NOT kill itself. It stays running so you can see the alert and monitor recovery.
+
+### Kill Mechanism
+
+- Uses psutil to send a graceful terminate signal to the process
+- Waits up to 5 seconds for the process to exit
+- Every kill is logged to audit/hotrod_audit.jsonl
+
+### Manual E-Stop
+
+Click the E-STOP button in the toolbar. A confirmation dialog appears. On confirm, all processes are killed immediately regardless of temperature.
+
+---
+
+## App Linking
+
+### Overview
+
+External apps can register themselves with HRT so they are automatically included in E-Stop kills. The link is one-way: the external app sends a single HTTP POST to HRT. HRT holds the registration in memory.
+
+### How It Works
+
+1. External app sends a POST request to http://127.0.0.1:8080/link with:
+   ```json
+   {
+     "app_name": "AiSmartGuy",
+     "exe_path": "C:\\path\\to\\AiSmartGuy.exe",
+     "pid": 12345
+   }
    ```
+2. HRT stores the entry. It appears in the Linked Apps section within a few seconds.
+3. On E-Stop, HRT kills the app by PID and by exe path.
 
-2. **Verify Operation:**
-   - Open browser to `http://localhost:8080`
-   - Check status endpoint: `GET /status`
+### Re-registration
 
-3. **Test Integration:**
-   ```bash
-   curl http://localhost:8080/status
-   ```
+- If HRT restarts, all links are lost. External apps must re-register.
+- If the external app restarts (new PID), it should re-register.
+- Posting the same app_name replaces the previous entry (deduplication by name).
 
-### First AI Job Protection
+### Currently Supported Apps
 
-1. **Submit a Job Request:**
-   ```bash
-   curl -X POST http://localhost:8080/preflight \
-     -H "Content-Type: application/json" \
-     -d '{"job_type": "ai_inference", "estimated_duration": 300}'
-   ```
+- **AiSmartGuy** — links automatically on startup via Tauri invoke
+- **GGUF Chatbox** — links automatically on startup
 
-2. **Monitor System:**
-   - Check temperature and resource usage
-   - Review decision in logs
-   - Observe protective actions if needed
-
-### Sound System Test
-
-1. **Trigger Startup Sound:**
-   - Service automatically plays on startup
-
-2. **Test Sound API:**
-   ```bash
-   curl -X POST http://localhost:8080/sound/play
-   ```
-
----
-
-## Core Features
-
-### Hardware Protection
-
-#### Temperature Monitoring
-- Real-time CPU/GPU temperature tracking
-- Configurable thermal thresholds
-- Automatic throttling and shutdown protection
-
-#### Resource Limits
-- CPU utilization limits
-- Memory usage controls
-- I/O bandwidth management
-
-#### Process Management
-- High-resource process identification
-- Graceful process termination
-- Emergency kill switches
-
-### Performance Optimization
-
-#### Dynamic Tuning
-- CPU frequency optimization
-- Memory allocation tuning
-- I/O scheduling optimization
-
-#### Workload Classification
-- AI inference job detection
-- Training workload identification
-- Background task prioritization
-
-### Governance Engine
-
-#### Policy-Based Decisions
-- Temperature threshold policies
-- Resource allocation policies
-- Safety enforcement policies
-
-#### Audit Trail
-- Complete decision logging
-- Action traceability
-- Compliance reporting
-
----
-
-## Telemetry Collection
-
-### Data Sources
-
-#### Hardware Sensors
-- **CPU Temperature**: Core and package temperatures
-- **GPU Temperature**: Graphics processor monitoring
-- **System Temperatures**: Motherboard and peripheral sensors
-- **Fan Speeds**: Cooling fan RPM monitoring
-
-#### System Metrics
-- **CPU Usage**: Per-core and total utilization
-- **Memory Usage**: RAM and swap utilization
-- **Disk I/O**: Read/write throughput and latency
-- **Network I/O**: Bandwidth usage and connections
-
-#### Process Information
-- **Active Processes**: Running process enumeration
-- **Resource Usage**: Per-process CPU and memory
-- **Thread Counts**: Process threading information
-
-### Collection Methods
-
-#### Polling Intervals
-- **Fast Polling**: 1-second intervals for critical metrics
-- **Standard Polling**: 5-second intervals for general metrics
-- **Slow Polling**: 60-second intervals for trend data
-
-#### Data Retention
-- **Short-term**: 1 hour of high-resolution data
-- **Medium-term**: 24 hours of aggregated data
-- **Long-term**: 7 days of daily summaries
-
-### Telemetry API
-
-#### Ingesting Telemetry
-```bash
-curl -X POST http://localhost:8080/telemetry \
-  -H "Content-Type: application/json" \
-  -d '{
-    "cpu_temp": 65.5,
-    "gpu_temp": 72.0,
-    "cpu_usage": 78.5,
-    "memory_usage": 82.3,
-    "timestamp": "2024-01-17T10:30:00Z"
-  }'
-```
-
-#### Retrieving Telemetry
-```bash
-curl http://localhost:8080/telemetry?since=2024-01-17T10:00:00Z
-```
-
----
-
-## Policy Engine
-
-### Policy Types
-
-#### Temperature Policies
-```yaml
-temperature_policies:
-  - sensor: "cpu"
-    warning_threshold: 70
-    critical_threshold: 85
-    action: "throttle"
-    hysteresis: 5
-```
-
-#### Resource Policies
-```yaml
-resource_policies:
-  - resource: "cpu"
-    limit: 80
-    action: "defer"
-    duration: 300
-```
-
-#### Job Policies
-```yaml
-job_policies:
-  - job_type: "ai_training"
-    max_concurrent: 1
-    priority: "high"
-    cooldown: 60
-```
-
-### Decision Making
-
-#### Approval States
-- **APPROVED**: Job can proceed immediately
-- **DEFERRED**: Job queued for later execution
-- **REQUIRES_APPROVAL**: Human approval needed
-- **DENIED**: Job blocked by policy
-
-#### Policy Evaluation
-1. **Pre-flight Check**: Evaluate job requirements
-2. **Resource Assessment**: Check current system state
-3. **Policy Application**: Apply relevant policies
-4. **Decision Rendering**: Return approval/denial
-
-### Policy Configuration
-
-#### File-Based Configuration
-```yaml
-policies:
-  temperature:
-    cpu_max: 80
-    gpu_max: 85
-    action: throttle
-  resources:
-    cpu_limit: 90
-    memory_limit: 85
-  jobs:
-    max_concurrent: 3
-    queue_size: 10
-```
-
-#### Runtime Policy Updates
-```bash
-curl -X POST http://localhost:8080/policies \
-  -H "Content-Type: application/json" \
-  -d '{"policy_type": "temperature", "cpu_max": 75}'
-```
-
----
-
-## Job Scheduling
-
-### Scheduler Architecture
-
-#### Priority Classes
-- **Critical**: System protection tasks
-- **High**: AI inference and real-time tasks
-- **Normal**: Standard workloads
-- **Low**: Background maintenance
-
-#### Queue Management
-- **Fair Queuing**: Round-robin scheduling
-- **Priority Queuing**: High-priority job preference
-- **Deadline Scheduling**: Time-sensitive job handling
-
-### Job Submission
-
-#### Basic Job Request
-```bash
-curl -X POST http://localhost:8080/schedule \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_id": "ai_inference_001",
-    "job_type": "ai_inference",
-    "priority": "high",
-    "estimated_duration": 300,
-    "resource_requirements": {
-      "cpu": 50,
-      "memory": 2048
-    }
-  }'
-```
-
-#### Advanced Job Parameters
-```json
-{
-  "job_id": "training_job_001",
-  "job_type": "ai_training",
-  "priority": "normal",
-  "estimated_duration": 3600,
-  "resource_requirements": {
-    "cpu": 80,
-    "memory": 8192,
-    "gpu": 1
-  },
-  "thermal_requirements": {
-    "max_temp": 75
-  },
-  "callbacks": {
-    "started": "http://callback.url/started",
-    "completed": "http://callback.url/completed",
-    "failed": "http://callback.url/failed"
-  }
-}
-```
-
-### Job Monitoring
-
-#### Job Status
-```bash
-curl http://localhost:8080/jobs/ai_inference_001
-```
-
-Response:
-```json
-{
-  "job_id": "ai_inference_001",
-  "status": "running",
-  "progress": 0.65,
-  "start_time": "2024-01-17T10:30:00Z",
-  "estimated_completion": "2024-01-17T11:00:00Z"
-}
-```
-
-#### Queue Status
-```bash
-curl http://localhost:8080/queue/status
-```
-
----
-
-## Thermal Management
-
-### Sensor Detection
-
-#### Automatic Discovery
-```bash
-curl -X POST http://localhost:8080/thermal/discover
-```
-
-#### Manual Sensor Configuration
-```yaml
-thermal_sensors:
-  - name: "cpu_package"
-    type: "temperature"
-    location: "/sys/class/thermal/thermal_zone0/temp"
-    multiplier: 0.001
-  - name: "gpu_core"
-    type: "temperature"
-    command: "nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader"
-```
-
-### Temperature Monitoring
-
-#### Real-time Readings
-```bash
-curl http://localhost:8080/thermal/status
-```
-
-Response:
-```json
-{
-  "sensors": [
-    {
-      "name": "cpu_package",
-      "temperature": 68.5,
-      "unit": "celsius",
-      "status": "normal"
-    },
-    {
-      "name": "gpu_core",
-      "temperature": 72.0,
-      "unit": "celsius",
-      "status": "warning"
-    }
-  ],
-  "fans": [
-    {
-      "name": "cpu_fan",
-      "speed": 1800,
-      "unit": "rpm",
-      "status": "active"
-    }
-  ]
-}
-```
-
-### Thermal Policies
-
-#### Threshold Configuration
-```yaml
-thermal_thresholds:
-  warning: 70
-  critical: 85
-  emergency: 95
-  hysteresis: 5
-```
-
-#### Automated Actions
-- **Warning**: Log event and send notification
-- **Critical**: Throttle CPU and increase fan speed
-- **Emergency**: Terminate processes and prepare shutdown
-
-### Fan Control
-
-#### Fan Speed Management
-```bash
-curl -X POST http://localhost:8080/fans/control \
-  -H "Content-Type: application/json" \
-  -d '{"fan": "cpu_fan", "speed": 2000}'
-```
-
-#### Automatic Fan Control
-- Temperature-based speed adjustment
-- PWM control for compatible fans
-- Manual override capabilities
+See devs/DEV_NOTES_APP_LINKING.txt for implementation details if you want to add HRT link support to your own app.
 
 ---
 
 ## Sound System
 
-### Sound File Management
+### Setup
 
-#### Directory Structure
-```
-hotrod-tuner/
-├── HRT wav sound file/
-│   ├── engine.wav          # Startup sound
-│   ├── throttle.wav        # Throttling sound
-│   └── shutdown.wav        # Emergency sound
-└── config.yaml
-```
+1. Click the gear icon, then click the Sound Folder button to open the assets/ folder.
+2. Drop any .wav file into that folder.
+3. HRT uses the first .wav file it finds (alphabetical order).
 
-#### Sound File Specifications
-- **Format**: WAV (uncompressed)
-- **Sample Rate**: 44.1kHz recommended
-- **Channels**: Stereo or mono
-- **Bit Depth**: 16-bit recommended
-- **Duration**: 2-5 seconds for startup sound
+### When Sound Plays
 
-### Sound Triggers
+- **App startup** — immediately after the splash screen
+- **HRT reset** — when you click the blue HRT text in the title bar
+- **Threshold alerts** — short synthesized beeps (not the .wav file) for warn, throttle, and e-stop levels
 
-#### Automatic Triggers
-- **Startup**: Plays when service starts
-- **Throttling**: Plays when thermal throttling activates
-- **Shutdown**: Plays during emergency shutdown
-- **Recovery**: Plays when system recovers from critical state
+### Requirements
 
-#### Manual Triggers
-```bash
-# Play startup sound
-curl -X POST http://localhost:8080/sound/play/startup
-
-# Play custom sound
-curl -X POST http://localhost:8080/sound/play \
-  -H "Content-Type: application/json" \
-  -d '{"file": "custom.wav"}'
-```
-
-### Sound Configuration
-
-#### Volume Control
-```yaml
-sound:
-  enabled: true
-  volume: 0.7
-  device: "default"
-  startup_sound: "HRT wav sound file/engine.wav"
-```
-
-#### Audio Device Selection
-```bash
-# List available audio devices
-curl http://localhost:8080/sound/devices
-
-# Set audio device
-curl -X POST http://localhost:8080/sound/device \
-  -H "Content-Type: application/json" \
-  -d '{"device": "alsa_output.pci-0000_00_1f.3.analog-stereo"}'
-```
-
----
-
-## API Reference
-
-### Core Endpoints
-
-#### Status and Health
-- `GET /status` - Service health and current metrics
-- `GET /health` - Basic health check
-- `GET /metrics` - Prometheus-style metrics
-
-#### Telemetry
-- `POST /telemetry` - Ingest telemetry data
-- `GET /telemetry` - Retrieve telemetry history
-- `DELETE /telemetry` - Clear telemetry buffer
-
-#### Job Management
-- `POST /preflight` - Evaluate job requirements
-- `POST /schedule` - Submit job for execution
-- `GET /jobs/{job_id}` - Get job status
-- `DELETE /jobs/{job_id}` - Cancel job
-- `GET /queue` - Get queue status
-
-#### Thermal Management
-- `GET /thermal/status` - Current thermal status
-- `POST /thermal/discover` - Discover sensors and fans
-- `POST /thermal/thresholds` - Set thermal thresholds
-- `POST /fans/control` - Control fan speeds
-
-#### Sound System
-- `POST /sound/play` - Play sound effect
-- `GET /sound/available` - List available sounds
-- `POST /sound/device` - Set audio device
-
-### Authentication
-
-#### API Key Authentication
-```bash
-curl -H "X-API-Key: your-api-key" http://localhost:8080/status
-```
-
-#### Configuration
-```yaml
-api:
-  key: "your-secure-api-key"
-  rate_limit: 100
-  timeout: 30
-```
-
-### Response Formats
-
-#### Success Response
-```json
-{
-  "success": true,
-  "data": {
-    "status": "healthy",
-    "timestamp": "2024-01-17T10:30:00Z"
-  },
-  "request_id": "req_12345"
-}
-```
-
-#### Error Response
-```json
-{
-  "success": false,
-  "error": {
-    "code": "THERMAL_SENSOR_ERROR",
-    "message": "Failed to read CPU temperature sensor",
-    "details": "Sensor /sys/class/thermal/thermal_zone0/temp not accessible"
-  },
-  "timestamp": "2024-01-17T10:30:00Z",
-  "request_id": "req_12345"
-}
-```
-
----
-
-## Configuration
-
-### Configuration File
-
-#### Basic Configuration (`config.yaml`)
-```yaml
-# Server settings
-server:
-  host: "0.0.0.0"
-  port: 8080
-  workers: 4
-
-# Logging
-logging:
-  level: "info"
-  file: "logs/hotrod.log"
-  max_size: "10MB"
-  retention: 7
-
-# Telemetry
-telemetry:
-  interval: 5
-  retention_hours: 24
-  buffer_size: 1000
-
-# Policies
-policies:
-  temperature:
-    warning: 70
-    critical: 85
-    emergency: 95
-  resources:
-    cpu_limit: 80
-    memory_limit: 85
-  jobs:
-    max_concurrent: 3
-    queue_timeout: 300
-
-# Hardware
-hardware:
-  platform: "auto"  # auto, windows, linux, macos
-  sensors: "auto"   # auto, lm-sensors, wmi, iokit
-
-# Sound
-sound:
-  enabled: true
-  directory: "HRT wav sound file"
-  startup_sound: "engine.wav"
-  volume: 0.7
-```
-
-### Environment Variables
-
-#### Override Configuration
-```bash
-export HOTROD_PORT=9090
-export HOTROD_LOG_LEVEL=debug
-export HOTROD_MAX_CONCURRENT_JOBS=5
-export HOTROD_TEMPERATURE_CRITICAL=90
-```
-
-#### Docker Configuration
-```bash
-docker run -e HOTROD_PORT=8080 \
-           -e HOTROD_MAX_MEMORY=85 \
-           -v /host/config:/app/config \
-           baxters/hotrod-tuner:latest
-```
-
-### Runtime Configuration
-
-#### Update Configuration
-```bash
-curl -X POST http://localhost:8080/config \
-  -H "Content-Type: application/json" \
-  -d '{"policies.temperature.critical": 90}'
-```
-
-#### Reload Configuration
-```bash
-curl -X POST http://localhost:8080/config/reload
-```
-
----
-
-## Monitoring and Logging
-
-### Log Management
-
-#### Log Levels
-- **ERROR**: Critical errors requiring attention
-- **WARN**: Warning conditions
-- **INFO**: General operational information
-- **DEBUG**: Detailed debugging information
-
-#### Log Rotation
-- Automatic log rotation at 10MB
-- 7-day retention period
-- Compressed archival
-
-### Audit Logging
-
-#### Audit Events
-- **Policy Decisions**: All approval/denial decisions
-- **Thermal Events**: Temperature threshold crossings
-- **Resource Actions**: Throttling and termination actions
-- **Job Events**: Job scheduling and completion
-
-#### Audit Format
-```json
-{
-  "timestamp": "2024-01-17T10:30:00Z",
-  "event_type": "policy_decision",
-  "job_id": "ai_job_001",
-  "decision": "approved",
-  "reason": "within_limits",
-  "telemetry": {
-    "cpu_temp": 65.5,
-    "cpu_usage": 72.3
-  }
-}
-```
-
-### Metrics and Monitoring
-
-#### Prometheus Metrics
-```bash
-curl http://localhost:8080/metrics
-```
-
-#### Key Metrics
-- `hotrod_jobs_active`: Number of active jobs
-- `hotrod_cpu_temperature`: Current CPU temperature
-- `hotrod_memory_usage`: Memory utilization percentage
-- `hotrod_decisions_total`: Total policy decisions made
-
-### Alerting
-
-#### Alert Conditions
-- Temperature thresholds exceeded
-- Resource limits reached
-- Job queue full
-- Service health degradation
-
-#### Alert Configuration
-```yaml
-alerts:
-  temperature:
-    enabled: true
-    webhook: "https://alerts.example.com/webhook"
-    thresholds:
-      - level: "warning"
-        value: 75
-      - level: "critical"
-        value: 90
-```
+- WAV format (uncompressed)
+- Any sample rate and channel count
+- Keep files reasonably small (under 5 MB) for fast loading
 
 ---
 
 ## Troubleshooting
 
-### Service Won't Start
+### App Appears Frozen (bars not updating)
 
-#### Common Issues
-1. **Port Already in Use**
-   ```
-   Error: [Errno 48] Address already in use
-   ```
-   Solution: Change port in config or free port 8080
+1. Click the **HRT** text in the title bar. This resets the entire dashboard and reconnects.
+2. If that does not help, check the connection dot. If red, the server may have crashed. Close and relaunch the exe.
+3. A built-in watchdog automatically reconnects if no data arrives for 5 seconds.
 
-2. **Permission Denied**
-   ```
-   Error: Permission denied accessing /sys/class/thermal/
-   ```
-   Solution: Run with sudo or adjust permissions
+### No Temperature Data (bars show 0C or are missing)
 
-3. **Missing Dependencies**
-   ```
-   ImportError: No module named 'fastapi'
-   ```
-   Solution: `pip install -r requirements.txt`
+- LibreHardwareMonitor needs admin elevation to read hardware sensors. If you clicked "No" on the Windows UAC prompt, restart HRT and click "Yes".
+- LHM is bundled in vendor/lhm/. It launches automatically — you do not need to install it separately.
+- Temperature data takes 2-3 seconds to appear after startup.
 
-#### Startup Verification
-```bash
-# Check if service is running
-curl http://localhost:8080/health
+### Only 6 CPU Core Temps (but 12 cores shown)
 
-# Check logs
-tail -f logs/hotrod.log
+This is normal. If you have a 6-core/12-thread CPU (hyperthreading), only 6 physical cores have temperature sensors. HRT automatically duplicates the physical core temps to their corresponding hyperthreaded logical cores.
 
-# Verify Python environment
-python -c "import fastapi, uvicorn; print('Dependencies OK')"
+### No Beep on Threshold Breach
+
+- Click anywhere in the HRT window first. Browsers require a user gesture before playing audio. One click anywhere unlocks audio for the entire session.
+- Check that your system volume is not muted.
+
+### E-Stop Did Not Kill the Process
+
+- Verify the linked app's PID is still valid (check Linked Apps in Settings).
+- If the external app restarted since linking, it has a new PID. It needs to re-register with HRT.
+- Path-based kill is case-insensitive but requires an exact full path match.
+
+### "Another instance is already running"
+
+HRT enforces single-instance via a Windows mutex. Close the existing instance first, or check Task Manager for a leftover Hot Rod Tuner.exe process and end it.
+
+### Port 8080 Already in Use
+
+Another application is using port 8080. Close it, or find and kill the process:
 ```
-
-### Thermal Sensor Issues
-
-#### Sensors Not Detected
-```bash
-# Manual sensor discovery
-curl -X POST http://localhost:8080/thermal/discover
-
-# Check sensor permissions
-ls -la /sys/class/thermal/
-
-# Install lm-sensors (Linux)
-sudo apt-get install lm-sensors
-sudo sensors-detect
+netstat -ano | findstr :8080
+taskkill /PID <pid_number> /F
 ```
-
-#### Inaccurate Readings
-- Calibrate sensors against known good readings
-- Check for hardware monitoring conflicts
-- Update motherboard firmware/BIOS
-
-### Performance Problems
-
-#### High CPU Usage
-- Reduce telemetry polling interval
-- Disable unnecessary logging
-- Check for background processes
-
-#### Memory Leaks
-- Monitor memory usage over time
-- Check for circular references in custom policies
-- Restart service periodically
-
-### Sound Issues
-
-#### No Sound Playback
-```bash
-# Test audio system
-aplay HRT\ wav\ sound\ file/engine.wav
-
-# Check audio devices
-aplay -l
-
-# Verify sound file format
-file HRT\ wav\ sound\ file/engine.wav
-```
-
-#### Distorted Audio
-- Check sample rate and format
-- Reduce volume setting
-- Try different audio device
-
-### Network Issues
-
-#### Connection Refused
-- Verify service is running: `ps aux | grep hotrod`
-- Check firewall settings
-- Confirm correct port and host
-
-#### Slow Responses
-- Check system load
-- Reduce concurrent connections
-- Optimize database queries
 
 ---
 
-## Advanced Usage
+## Developer API Reference
 
-### Custom Policies
+HRT runs a FastAPI server on http://127.0.0.1:8080. All endpoints accept and return JSON.
 
-#### Policy Development
-```python
-from hotrod.policies import BasePolicy
+### Sensor Data
 
-class CustomThermalPolicy(BasePolicy):
-    def evaluate(self, telemetry):
-        if telemetry.cpu_temp > self.config.get('custom_threshold', 80):
-            return 'defer', 'Custom thermal policy triggered'
-        return 'approve', None
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| WebSocket | /ws/sensors | Streams sensor snapshots at 1 Hz |
+| GET | /api/sensors | Single sensor snapshot (REST fallback) |
 
-#### Policy Registration
-```python
-from hotrod.policy_engine import PolicyEngine
+### Health & Status
 
-engine = PolicyEngine()
-engine.register_policy('custom_thermal', CustomThermalPolicy())
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | /health | Returns status and uptime in seconds |
+| GET | /status | Full status: governor, scheduler, current metrics |
 
-### Integration Examples
+### App Linking
 
-#### Python Integration
-```python
-import requests
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | /link | Register an external app. Body: {app_name, exe_path, pid} |
+| GET | /link | List all currently linked apps |
 
-class HotRodClient:
-    def __init__(self, base_url="http://localhost:8080"):
-        self.base_url = base_url
-    
-    def check_job(self, job_spec):
-        response = requests.post(f"{self.base_url}/preflight", json=job_spec)
-        return response.json()
-    
-    def submit_job(self, job_spec):
-        response = requests.post(f"{self.base_url}/schedule", json=job_spec)
-        return response.json()
-```
+### Process Control
 
-#### Docker Integration
-```yaml
-version: '3.8'
-services:
-  hotrod-tuner:
-    image: baxters/hotrod-tuner:latest
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./config:/app/config
-      - ./logs:/app/logs
-      - ./sounds:/app/HRT wav sound file
-    environment:
-      - HOTROD_MAX_CONCURRENT_JOBS=5
-      - HOTROD_TEMPERATURE_CRITICAL=85
-    restart: unless-stopped
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | /api/kill | Kill by exe path. Body: {path, dry_run, actor, scope} |
+| POST | /api/kill-pid | Kill by PID. Body: {pid, actor, scope} |
+| POST | /api/shutdown | Shut down HRT itself (no body required) |
+| GET | /api/processes | List all running exe paths on the system |
 
-### Custom Telemetry Sources
+### Sound
 
-#### External Sensor Integration
-```python
-import requests
-from hotrod.telemetry import TelemetryCollector
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | /sound/play | Play the startup sound |
+| GET | /sound/available | List available .wav files |
+| GET | /api/sound-folder | Get the assets folder path |
+| POST | /api/sound-folder/open | Open assets folder in Explorer |
 
-class ExternalSensorCollector(TelemetryCollector):
-    def collect(self):
-        # Fetch data from external sensor API
-        response = requests.get('http://sensor-api/temperature')
-        data = response.json()
-        
-        return {
-            'external_temp': data['temperature'],
-            'external_humidity': data['humidity']
-        }
-```
+### GUI
 
-### High Availability Setup
-
-#### Load Balancing
-```nginx
-upstream hotrod_cluster {
-    server hotrod-01:8080;
-    server hotrod-02:8080;
-    server hotrod-03:8080;
-}
-
-server {
-    listen 80;
-    location / {
-        proxy_pass http://hotrod_cluster;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-#### Database Integration
-```python
-from hotrod.storage import MetricsStore
-import redis
-
-class RedisMetricsStore(MetricsStore):
-    def __init__(self):
-        self.redis = redis.Redis(host='localhost', port=6379)
-    
-    def store_metric(self, metric, value, timestamp):
-        key = f"hotrod:metrics:{metric}:{timestamp.date()}"
-        self.redis.zadd(key, {timestamp.isoformat(): value})
-```
-
-### Security Hardening
-
-#### API Security
-```yaml
-security:
-  api_keys:
-    - key: "prod-api-key-001"
-      permissions: ["read", "write", "admin"]
-  rate_limiting:
-    requests_per_minute: 60
-    burst_limit: 10
-  encryption:
-    enabled: true
-    key_file: "/etc/hotrod/ssl/private.key"
-    cert_file: "/etc/hotrod/ssl/certificate.crt"
-```
-
-#### Network Security
-- Run behind reverse proxy (nginx/caddy)
-- Use HTTPS in production
-- Implement IP whitelisting
-- Regular security audits
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | / | Serves the HTML dashboard |
 
 ---
 
-*For additional support and advanced configuration options, consult the Baxter's technical documentation or contact support.*</content>
-<parameter name="filePath">c:\Users\Baxter\Desktop\file cabinet\installed apps\Baxters Ai Hot Rod Tuner\Hot_Rod_Tuner_Standalone_Manual.md
+*Baxter's AI Hot Rod Tuner — built to keep your hardware alive while you push it hard.*

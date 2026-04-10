@@ -1,59 +1,101 @@
-# Baxters AI Hot Rod Tuner
+# Baxter's AI Hot Rod Tuner
 
-Purpose: lightweight governor/tuner service to protect homelab hardware while enabling strong local AI workflows.
+A real-time temperature governor for heavy resource-draw apps. HRT monitors CPU and GPU thermals via LibreHardwareMonitor and will automatically throttle or emergency-kill linked applications when temperatures breach configurable thresholds.
+
+Built for homelab rigs running local AI workloads where thermal runaway can damage hardware.
+
+## How It Works
+
+1. **Launch HRT** — a compact 200×450 px dashboard docks to the bottom-right of your screen.
+2. **Sensors stream in** — CPU core temps and GPU temps update every second via WMI (LibreHardwareMonitor).
+3. **Thresholds trigger alerts** — three levels per sensor type:
+   - **Yellow** — advisory warning
+   - **Orange** — throttle signal
+   - **Red** — E-STOP: linked apps are killed immediately
+4. **Linked apps register themselves** — any app can `POST /link` with its name, exe path, and PID. HRT tracks them and can kill them on demand.
+5. **E-STOP** — manual button or automatic threshold trigger. Kills linked apps by PID, then scans by exe name as fallback. Children processes (Tauri/Electron) are killed first.
 
 ## Features
 
-- **Telemetry Collection**: CPU, GPU, memory, and temperature monitoring
-- **Policy Engine**: Temperature thresholds, token buckets, and cooldown management
-- **Job Scheduling**: Priority-based job queuing with fairness controls
-- **Audit Logging**: Complete audit trail of all decisions and actions
-- **Sound Effects**: Race car engine sound plays on startup and panel activation
-- **Web Integration**: Seamless integration with Baxter SOC interface
+- **Live sensor dashboard** — CPU and GPU temps, fan speeds, clocks via WebSocket
+- **Three-tier threshold system** — yellow/orange/red per sensor, configurable in the UI
+- **E-STOP** — emergency kill of linked apps (manual button + automatic trigger)
+- **App linking protocol** — any app can register via REST API for monitoring and kill control
+- **Process tray** — manually add exe paths for kill targeting
+- **BSOD prevention** — dead-PID early bail, killed-names cleanup, 30s cooldown
+- **Protected process list** — system-critical processes are never killed
+- **Audit logging** — all kill events logged to JSONL
+- **Startup sound** — customizable WAV sound on launch
+- **Single-instance enforcement** — Windows named mutex prevents duplicates
+- **Auto-elevation** — UAC admin prompt on launch (required for LHM access)
 
-## Sound System
+## Requirements
 
-The Hot Rod Tuner includes an integrated sound system that plays a race car engine sound:
-
-- **Startup Sound**: Plays when the standalone Hot Rod Tuner server starts
-- **Panel Activation**: Plays when the Hot Rod Tuner panel is opened in SOC
-- **Sound Files**: Place WAV files in the `HRT wav sound file/` directory
-- **Fallback**: Graceful fallback to text messages if sound is unavailable
+- Windows 10/11
+- Python 3.12+ (3.14 tested)
+- [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) v0.9.4+ (bundled in `vendor/lhm/`)
+- Microsoft Edge (for app-mode dashboard window)
+- Admin privileges (for WMI sensor access)
 
 ## Quick Start
 
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+python run_server.py
+```
 
-2. Add sound files (optional):
-   ```bash
-   # Place your race car engine sound in:
-   # HRT wav sound file/engine.wav
-   ```
+Or build the standalone exe:
 
-3. Start the server:
-   ```bash
-   python run_server.py
-   ```
+```bash
+python -m PyInstaller "Hot Rod Tuner.spec" --noconfirm
+# Output: dist/Hot Rod Tuner.exe
+```
 
-4. Access the API at: http://localhost:8080
+## API
 
-## API Endpoints
+| Endpoint | Method | Description |
+|---|---|---|
+| `/health` | GET | Server health check |
+| `/api/sensors` | GET | Current sensor readings |
+| `/ws/sensors` | WS | Live sensor stream (~1s updates) |
+| `/link` | POST | Register an app for monitoring/kill |
+| `/link` | GET | List linked apps |
+| `/api/estop` | POST | Emergency kill all linked + named targets |
+| `/api/kill` | POST | Kill a process by name |
+| `/api/kill-pid` | POST | Kill a process by PID |
+| `/api/processes` | GET | List running processes |
+| `/api/protected` | GET | List protected process names |
+| `/status` | GET | Governor status and uptime |
 
-- `GET /status` - Current governor status
-- `POST /telemetry` - Ingest telemetry data
-- `POST /preflight` - Evaluate job requests
-- `POST /schedule` - Submit jobs to scheduler
-- `POST /sound/play` - Trigger sound playback
-- `GET /sound/available` - List available sound files
+## Linking Your App
 
-## Integration with SOC
+Any application can register with HRT for thermal protection:
 
-The Hot Rod Tuner integrates with Baxter SOC through:
+```bash
+curl -X POST http://127.0.0.1:8080/link \
+  -H "Content-Type: application/json" \
+  -d '{"app_name": "MyApp", "exe_path": "C:/path/to/myapp.exe", "pid": 12345}'
+```
 
-- **Capability Registry**: All features registered as SOC capabilities
-- **Web Proxy**: SOC web server proxies Hot Rod API calls
-- **Sound Triggers**: Panel activation triggers sound playback
-- **Status Monitoring**: Real-time status display in SOC interface
+When temps hit red, HRT kills all linked apps automatically.
+
+## Project Structure
+
+```
+run_server.py           # Entry point: splash, server thread, Edge window
+src/hotrod_tuner/
+  app.py                # FastAPI app, E-STOP, kill logic, linking
+  sensors.py            # WMI/LHM sensor polling
+  metrics.py            # Metrics storage
+  policies.py           # Policy/decision engine
+  scheduler.py          # Job scheduler
+  sound.py              # Startup sound manager
+  splash.py             # Tkinter splash screen
+static/
+  index.html            # Dashboard UI (single-page)
+vendor/lhm/             # LibreHardwareMonitor binaries
+```
+
+## License
+
+MIT

@@ -5,7 +5,8 @@ __pycache__/
 # PyInstaller build artifacts
 build/
 dist/
-*.spec
+# Keep the .spec file — devs need it to rebuild the exe
+!Hot Rod Tuner.spec
 
 # IDE / editor
 .vscode/
@@ -19,3 +20,18 @@ Desktop.ini
 
 # Audit logs (generated at runtime)
 audit/
+
+# Vendored binaries (downloaded at first run)
+vendor/
+
+# Generated launcher (created by HRT_installer.bat)
+HRT_launch.bat
+
+# Dev artifacts kept locally only
+DESIGN.md
+generate_pdfs.py
+examples/
+tests/
+saddle/
+HRT instruction blocks/
+HANDOFF_SESSION_*.txt
