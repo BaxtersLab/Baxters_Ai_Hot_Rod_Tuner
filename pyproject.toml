@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baxters-hot-rod-tuner"
+version = "0.1.0"
+description = "AI Hot Rod Tuner — temperature monitor and kill switch"
+authors = [{ name = "Sage Baxter" }]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "pydantic>=2.11",
+    "psutil>=7.0",
+    "dataclasses-json>=0.6",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["hotrod_tuner*"]

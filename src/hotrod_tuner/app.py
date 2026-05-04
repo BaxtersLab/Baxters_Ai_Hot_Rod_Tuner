@@ -9,6 +9,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from pydantic import BaseModel
+import os as _os
 
 from .metrics import MetricsStore
 from .policies import DecisionEngine, PolicyConfig
@@ -119,7 +120,17 @@ if _STATIC_DIR.is_dir():
 @app.on_event("startup")
 def _on_startup():
     _hrt_log.info('FastAPI startup event fired')
-    _load_linked()
+    # By default HRT will attempt to reconnect to previously linked apps.
+    # Set environment variable `HRT_DISABLE_LINKS=1` to skip reconnect (useful
+    # when you don't want external chat apps to reappear).
+    try:
+        disable_links = str(_os.getenv('HRT_DISABLE_LINKS', '')).lower() in ('1', 'true', 'yes')
+    except Exception:
+        disable_links = False
+    if not disable_links:
+        _load_linked()
+    else:
+        _hrt_log.info('Linked-app reconnection disabled via HRT_DISABLE_LINKS')
     launch_lhm()
     sensor_poller.start()
     _hrt_log.info('Startup complete: LHM launched, poller started')
