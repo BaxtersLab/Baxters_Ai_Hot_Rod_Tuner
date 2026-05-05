@@ -137,15 +137,18 @@ def _on_startup():
 
 @app.on_event("shutdown")
 def _on_shutdown():
-    _hrt_log.warning('FastAPI shutdown event fired — server is stopping')
+    """Single shutdown handler — log the event then stop hardware polling."""
     import traceback
+    _hrt_log.warning('FastAPI shutdown event fired — server is stopping')
     _hrt_log.warning(''.join(traceback.format_stack()))
-
-
-@app.on_event("shutdown")
-def _on_shutdown():
-    sensor_poller.stop()
-    stop_lhm()
+    try:
+        sensor_poller.stop()
+    except Exception as _e:
+        _hrt_log.error(f'sensor_poller.stop() failed: {_e}')
+    try:
+        stop_lhm()
+    except Exception as _e:
+        _hrt_log.error(f'stop_lhm() failed: {_e}')
 
 
 @app.get("/", include_in_schema=False)

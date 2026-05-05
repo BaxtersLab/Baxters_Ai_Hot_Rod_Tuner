@@ -2,7 +2,8 @@
 title Hot Rod Tuner
 cd /d "%~dp0"
 set "PYTHONPATH=%~dp0src"
-echo Starting Hot Rod Tuner on http://127.0.0.1:8080 ...
+echo Starting Hot Rod Tuner on http://127.0.0.1:8090 ...
+set "HOTROD_PORT=8090"
 python run_server.py
 if %errorlevel% neq 0 (
     echo.

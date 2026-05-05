@@ -62,8 +62,9 @@ echo [4/4] Creating launcher and Start Menu shortcut...
 echo @echo off
 echo cd /d "%HRT_ROOT%"
 echo set "PYTHONPATH=%HRT_ROOT%src"
-echo echo Starting Hot Rod Tuner on http://127.0.0.1:8080 ...
-echo start "" "http://127.0.0.1:8080"
+echo set "HOTROD_PORT=8090"
+echo echo Starting Hot Rod Tuner on http://127.0.0.1:8090 ...
+echo start "" "http://127.0.0.1:8090"
 echo python run_server.py
 ) > "%HRT_ROOT%HRT_launch.bat"
 
@@ -81,7 +82,7 @@ echo.
 echo ============================================================
 echo   Installation complete!
 echo   Run: HRT_launch.bat   (or Start Menu shortcut)
-echo   GUI: http://127.0.0.1:8080
+echo   GUI: http://127.0.0.1:8090
 echo ============================================================
 echo.
 pause

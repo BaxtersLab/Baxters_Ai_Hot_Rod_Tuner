@@ -72,7 +72,7 @@ python -m PyInstaller "Hot Rod Tuner.spec" --noconfirm
 Any application can register with HRT for thermal protection:
 
 ```bash
-curl -X POST http://127.0.0.1:8080/link \
+curl -X POST http://127.0.0.1:8090/link \
   -H "Content-Type: application/json" \
   -d '{"app_name": "MyApp", "exe_path": "C:/path/to/myapp.exe", "pid": 12345}'
 ```

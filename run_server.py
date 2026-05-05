@@ -75,9 +75,56 @@ sys.excepthook = _sys_excepthook
 _server_ready = Event()
 _splash_done = Event()
 
+# Reference to the browser app-mode process so we can watch it for exit
+_browser_proc: subprocess.Popen | None = None
+
+
+def _watch_browser_and_exit(proc: subprocess.Popen) -> None:
+    """Block until the app-mode browser window closes, then hard-exit.
+
+    When the user clicks the red X on the HRT floating window the browser
+    process terminates.  We detect that here and call os._exit() so that
+    every thread — uvicorn, sensor poller, LHM, the main keep-alive loop —
+    is killed immediately.  Nothing is left behind as a zombie.
+
+    Grace-period: if the subprocess exits in under 3 seconds it most likely
+    handed the URL off to an already-running (non-elevated) Edge/Chrome
+    instance and immediately returned — that is NOT a user-initiated close.
+    In that case we leave the server alive so the handed-off window can
+    connect normally.
+    """
+    _t0 = time.monotonic()
+    proc.wait()  # blocks until browser exits (red X, or any other close)
+    elapsed = time.monotonic() - _t0
+
+    if elapsed < 3.0:
+        # Fast exit — browser handed URL to existing instance (common when
+        # HRT runs elevated and Edge/Chrome runs at normal privilege).
+        # The real window is still open; keep the server alive.
+        _run_log.warning(
+            f'Browser subprocess exited in {elapsed:.2f}s — treated as '
+            f'handoff to existing instance; server stays alive.'
+        )
+        _run_fh.flush()
+        return
+
+    _run_log.info('HRT browser window closed — shutting down all processes')
+    _run_fh.flush()
+    # Hard-exit: kills all daemon threads (uvicorn, sensor poller, LHM)
+    # in one shot.  No need to call stop_lhm() separately — process death
+    # is the cleanest shutdown.
+    import os as _os
+    _os._exit(0)
+
 
 def _open_app_window(url: str, width: int = 200, height: int = 450, wait_splash: bool = True):
-    """Open HRT in a compact app-mode window (no address bar, no tabs)."""
+    """Open HRT in a compact app-mode window (no address bar, no tabs).
+
+    Stores the browser process in _browser_proc and starts a watcher thread
+    so that closing the window (red X) kills the entire server process.
+    """
+    global _browser_proc
+
     # Wait for splash to fully close before opening Edge
     if wait_splash:
         _splash_done.wait(timeout=25)
@@ -116,19 +163,32 @@ def _open_app_window(url: str, width: int = 200, height: int = 450, wait_splash:
         f"--user-data-dir={os.path.join(os.environ.get('TEMP', '.'), 'hrt-app-window')}",
     ]
 
+    proc = None
     if os.path.isfile(edge):
-        subprocess.Popen([edge] + app_flags)
-        return
-    if chrome and os.path.isfile(chrome):
-        subprocess.Popen([chrome] + app_flags)
-        return
-    for cp in chrome_paths:
-        if os.path.isfile(cp):
-            subprocess.Popen([cp] + app_flags)
-            return
+        proc = subprocess.Popen([edge] + app_flags)
+    elif chrome and os.path.isfile(chrome):
+        proc = subprocess.Popen([chrome] + app_flags)
+    else:
+        for cp in chrome_paths:
+            if os.path.isfile(cp):
+                proc = subprocess.Popen([cp] + app_flags)
+                break
 
-    import webbrowser
-    webbrowser.open(url)
+    if proc is not None:
+        _browser_proc = proc
+        # Watcher thread: when the browser exits, kill the whole server
+        threading.Thread(
+            target=_watch_browser_and_exit,
+            args=(proc,),
+            name='hrt-browser-watcher',
+            daemon=True,
+        ).start()
+        _run_log.info(f'Browser launched (pid={proc.pid}); watcher active')
+    else:
+        # Fallback: no watchable process — open in default browser
+        import webbrowser
+        webbrowser.open(url)
+        _run_log.warning('No Edge/Chrome found; opened in default browser — close-to-exit not available')
 
 
 def _run_server(host: str, port: int):
@@ -179,7 +239,7 @@ if __name__ == "__main__":
     _ERROR_ALREADY_EXISTS = 183
 
     host = os.getenv("HOTROD_HOST", "127.0.0.1")
-    port = int(os.getenv("HOTROD_PORT", "8080"))
+    port = int(os.getenv("HOTROD_PORT", "8090"))  # 8080 is reserved for LLM backend (GGUF Chatbox)
     url = f"http://{host}:{port}"
 
     if _last_error == _ERROR_ALREADY_EXISTS:
