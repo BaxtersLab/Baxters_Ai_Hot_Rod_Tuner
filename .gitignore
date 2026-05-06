@@ -21,6 +21,12 @@ Desktop.ini
 # Audit logs (generated at runtime)
 audit/
 
+# Runtime data (logs, linked app state)
+data/
+
+# Temporary dist output (clean builds only)
+dist_new/
+
 # Vendored binaries (downloaded at first run)
 vendor/
 
