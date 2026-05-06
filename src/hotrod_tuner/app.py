@@ -171,6 +171,12 @@ def _on_startup():
             snap = sensor_poller.snapshot()
             return decision_engine.recommend_fan_aggressiveness(snap) if snap else 0
         fan_manager.set_policy_hook(_fan_policy_hook)
+        # Eagerly probe backend so fan icon shows immediately on load
+        threading.Thread(
+            target=lambda: __import__('hotrod_tuner.fan_manager', fromlist=['_detect_backend'])._detect_backend(),
+            name='hrt-fan-backend-probe',
+            daemon=True,
+        ).start()
     except Exception as _e:
         _hrt_log.error(f'fan_manager.start() failed: {_e}')
     _hrt_log.info('Startup complete: LHM launched, poller started')
