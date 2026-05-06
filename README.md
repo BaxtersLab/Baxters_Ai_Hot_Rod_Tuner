@@ -70,14 +70,18 @@ python -m PyInstaller "Hot Rod Tuner.spec" --noconfirm
 | `/status` | GET | Governor status and uptime |
 | `/api/fans` | GET | Fan optimizer state |
 | `/api/fans/optimize` | POST | Set fan aggressiveness (0-100) |
+| `/api/fans/backend` | GET | Active fan control backend (`lhm`, `dell`, or `none`) |
+| `/api/fans/backend/reset` | POST | Force re-probe of fan backend |
+| `/api/heartbeat` | POST | UI heartbeat — server exits 15s after last ping |
 
 ## Fan Optimizer
 
-The **Optimize Fans** slider (above the toolbar in the dashboard) ramps CPU and case fans beyond their idle baseline when you're running heavy workloads.
+The **Optimize Fans** slider (above the toolbar in the dashboard) lets you manually ramp CPU and case fans during heavy workloads. A 🌀 fan icon appears in the title bar next to the HRT logo whenever fan control is active — it spins while aggressiveness is raised above zero.
 
-- Slide right to push fans harder. Slide back to zero to restore hardware defaults.
-- Fan speed is **never reduced below the measured baseline** — the optimizer only raises fans.
+- Slide right to push fans harder. Slide back to zero to restore BIOS automatic control.
 - **GPU fans are never touched** — GPU drivers manage their own thermal curves.
+- The slider maps to your hardware's fan levels (3 discrete levels on Dell SMM, continuous PWM on generic boards).
+- The app **self-elevates via UAC** on launch — admin rights are required to write to fan hardware.
 
 ### Policy auto-raise
 
