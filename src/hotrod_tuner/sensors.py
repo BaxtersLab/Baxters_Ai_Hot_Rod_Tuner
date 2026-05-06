@@ -468,7 +468,19 @@ class SensorPoller:
                     # Skip all other WMI load sensors (CPU load already
                     # comes from psutil; HDD/NIC/memory load is noise)
 
-                # Skip fan, clock, voltage, power — not needed in dashboard
+                # ── Fan sensors ──────────────────────────────────────
+                elif s_type == "fan":
+                    if not is_gpu:
+                        fan_label = (sensor.Name or "Fan").replace(" ", "_").lower()
+                        snap.sensors.append(SensorReading(
+                            name=f"fan_wmi_{fan_label}",
+                            label=sensor.Name or "Fan",
+                            value=float(value),
+                            unit="RPM",
+                            category="fan",
+                        ))
+
+                # Skip clock, voltage, power — not needed in dashboard
 
         except Exception:
             self._wmi_conn = None  # Reset so we retry next poll

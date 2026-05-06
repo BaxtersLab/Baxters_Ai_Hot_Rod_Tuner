@@ -44,6 +44,10 @@
   .dot.err { background: var(--red); }
   .dot.reconn { background: var(--accent); animation: beacon 1.5s ease-in-out infinite; }
   @keyframes beacon { 0%,100%{ opacity:.25; } 50%{ opacity:1; } }
+  .fan-icon { font-size:11px; display:none; cursor:default; transition:opacity .4s; }
+  .fan-icon.visible { display:inline-block; }
+  .fan-icon.spinning { animation: fanspin 1.2s linear infinite; }
+  @keyframes fanspin { from{ transform:rotate(0deg); } to{ transform:rotate(360deg); } }
 
   /* ── Alert banner ── */
   .alert-bar {
@@ -175,6 +179,7 @@
 <!-- Title bar -->
 <div class="titlebar">
   <span class="logo">🏎️ HRT</span>
+  <span class="fan-icon" id="fanIcon" title="" style="margin-left:5px;">🌀</span>
   <div class="spacer"></div>
   <div class="conn"><span class="dot err" id="connDot"></span><span id="connText">…</span></div>
 </div>
@@ -218,6 +223,14 @@
     <button id="soundFolderBtn" style="background:var(--accent);border:none;color:#111;border-radius:2px;padding:2px 8px;font-size:9px;font-weight:700;cursor:pointer;">📂 Sound Folder</button>
     <span id="soundFileLabel" style="font-size:9px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
   </div>
+</div>
+
+<!-- Fan optimizer control (above toolbar) -->
+<div style="padding:6px 8px;background:#161616;border-top:1px solid #222;display:flex;align-items:center;gap:8px;flex-shrink:0;">
+  <div style="flex:1;color:var(--dim);font-size:9px;">Optimize Fans</div>
+  <input id="fanSlider" type="range" min="0" max="100" step="1" value="0" style="width:240px;" />
+  <div id="fanValue" style="width:34px;text-align:right;color:var(--dim);font-size:9px;">0%</div>
+  <div id="fanStatus" style="width:120px;text-align:left;color:var(--dim);font-size:9px;">active</div>
 </div>
 
 <!-- Bottom toolbar -->
@@ -670,9 +683,65 @@ function resetApp() {
 document.querySelector(".titlebar .logo").addEventListener("click", resetApp);
 
 // ── Init ────────────────────────────────────────────────────────────
+// ── Fan optimizer UI wiring ─────────────────────────────────────────
+async function initFanControls(){
+  const slider = document.getElementById('fanSlider');
+  const val = document.getElementById('fanValue');
+  const status = document.getElementById('fanStatus');
+  const fanIcon = document.getElementById('fanIcon');
+  function updateFanIcon(state){
+    if(!state) return;
+    const backend = state.fan_backend || 'none';
+    const hasControl = backend !== 'none';
+    if(hasControl){
+      fanIcon.classList.add('visible');
+      fanIcon.title = 'Fan control: ' + backend;
+      // spin when aggressiveness is active
+      if((state.aggressiveness || 0) > 0 || (state.policy_rec || 0) > 0){
+        fanIcon.classList.add('spinning');
+      } else {
+        fanIcon.classList.remove('spinning');
+      }
+    } else {
+      fanIcon.classList.remove('visible');
+      fanIcon.classList.remove('spinning');
+    }
+  }
+  function setUI(state){
+    if(!state) return;
+    slider.value = state.aggressiveness || 0;
+    val.textContent = (state.aggressiveness || 0) + '%';
+    status.textContent = 'active';
+    updateFanIcon(state);
+  }
+  // fetch initial state
+  try{
+    const r = await fetch('/api/fans');
+    if(r.ok){ setUI(await r.json()); }
+  }catch(e){}
+
+  let sendTimer = null;
+  slider.addEventListener('input', ()=>{
+    val.textContent = slider.value + '%';
+    // debounce POST
+    if(sendTimer) clearTimeout(sendTimer);
+    sendTimer = setTimeout(async ()=>{
+      try{
+        const body = {aggressiveness: parseInt(slider.value,10)};
+        const resp = await fetch('/api/fans/optimize', {method:'POST',headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        if(resp.ok){ const s = await resp.json(); setUI(s); }
+      }catch(e){ console.error('fan optimize post failed',e); }
+    }, 300);
+  });
+}
+
 renderProcesses();
 connectWs();
 setInterval(() => { refreshProcStatus(); refreshLinked(); }, 3000);
+initFanControls();
+// Heartbeat: keep the server alive while this window is open.
+// Server exits automatically if pings stop (window closed / crash).
+setInterval(() => { fetch('/api/heartbeat', {method:'POST'}).catch(()=>{}); }, 3000);
 // Watchdog: if no WS data for 60s, reconnect quietly
 setInterval(() => {
   if (lastWsTime > 0 && Date.now() - lastWsTime > 60000) {

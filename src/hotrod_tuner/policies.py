@@ -198,6 +198,43 @@ class DecisionEngine:
 
         return int(remaining.total_seconds() / 60)
 
+    def recommend_fan_aggressiveness(self, snapshot) -> int:
+        """Return a fan aggressiveness recommendation (0-100) based on CPU temps.
+
+        Uses the CPU-only sensors from a HardwareSnapshot (GPU fans are
+        excluded at the fan_manager layer — this method only inspects
+        CPU temperature to decide how hard to spin case/CPU fans).
+
+        Recommendation tiers:
+          0   — below orange-hysteresis (fans are fine)
+          40  — entering orange zone (warm, gentle boost)
+          70  — at or above orange threshold (hot, push harder)
+          100 — red zone (+10°C above orange) (critical, max fans)
+
+        This value should be max()'d with the user's manual setting so the
+        user's higher preference always wins.
+        """
+        if snapshot is None:
+            return 0
+        cpu_temps = [
+            s.value
+            for s in snapshot.sensors
+            if s.category == 'temperature' and 'cpu' in s.name.lower() and s.value
+        ]
+        if not cpu_temps:
+            return 0
+        peak = max(cpu_temps)
+        warm = self.config.cpu_temp_threshold - self.config.cpu_temp_hysteresis
+        hot = self.config.cpu_temp_threshold
+        critical = hot + 10.0
+        if peak >= critical:
+            return 100
+        if peak >= hot:
+            return 70
+        if peak >= warm:
+            return 40
+        return 0
+
     def get_status(self) -> Dict[str, Any]:
         """Get current governor status."""
         return {

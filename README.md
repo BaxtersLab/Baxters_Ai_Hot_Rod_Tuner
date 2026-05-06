@@ -1,3 +1,5 @@
+![Baxter's AI Hot Rod Tuner](assets/Hot%20rod%20tuner%20banner.png)
+
 # Baxter's AI Hot Rod Tuner
 
 A real-time temperature governor for heavy resource-draw apps. HRT monitors CPU and GPU thermals via LibreHardwareMonitor and will automatically throttle or emergency-kill linked applications when temperatures breach configurable thresholds.
@@ -66,6 +68,54 @@ python -m PyInstaller "Hot Rod Tuner.spec" --noconfirm
 | `/api/processes` | GET | List running processes |
 | `/api/protected` | GET | List protected process names |
 | `/status` | GET | Governor status and uptime |
+| `/api/fans` | GET | Fan optimizer state |
+| `/api/fans/optimize` | POST | Set fan aggressiveness (0-100) |
+
+## Fan Optimizer
+
+The **Optimize Fans** slider (above the toolbar in the dashboard) ramps CPU and case fans beyond their idle baseline when you're running heavy workloads.
+
+- Slide right to push fans harder. Slide back to zero to restore hardware defaults.
+- Fan speed is **never reduced below the measured baseline** — the optimizer only raises fans.
+- **GPU fans are never touched** — GPU drivers manage their own thermal curves.
+
+### Policy auto-raise
+
+When CPU temps enter the orange zone (≥75 °C by default) the policy engine automatically raises fan aggressiveness without affecting your manual slider. Your manual setting always wins if it is set higher.
+
+| CPU peak temp | Auto aggressiveness |
+|---|---|
+| < 75 °C | 0 (no change) |
+| 75–79 °C | 40 |
+| 80–89 °C | 70 |
+| ≥ 90 °C | 100 |
+
+### Hardware backend
+
+HRT auto-detects which fan control backend your machine supports:
+
+| Backend | Hardware | Status |
+|---|---|---|
+| **Dell SMM** (`HrtDellFanControl.exe`) | Dell workstations / laptops | ✅ Tested (Dell Precision, Xeon) |
+| **LHM** (`HrtFanControl.exe`) | Generic boards (ASUS, MSI, Gigabyte, etc.) | ⚠️ Coded, not yet tested on non-Dell hardware |
+
+The correct backend is probed automatically on first fan write — no configuration required.
+
+#### Dell SMM setup (one-time, requires reboot)
+
+Dell locks fan control away from LibreHardwareMonitor. The Dell backend uses [FanControl.DellPlugin](https://github.com/Rem0o/FanControl.DellPlugin) (BZH kernel driver). Two admin steps are required before first use:
+
+1. From an **elevated 64-bit PowerShell** (Win+X → PowerShell Admin):
+```powershell
+bcdedit /set testsigning on
+```
+2. Also from elevated PowerShell:
+```powershell
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy" -Name "UpgradedSystem" -Value 0 -Type DWord -Force
+```
+3. Reboot.
+
+The app itself self-elevates via UAC on every launch (required for the kernel driver).
 
 ## Linking Your App
 

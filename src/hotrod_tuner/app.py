@@ -6,6 +6,7 @@ import asyncio
 import psutil
 import json
 import time
+import threading
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from pydantic import BaseModel
@@ -16,6 +17,7 @@ from .policies import DecisionEngine, PolicyConfig
 from .scheduler import TokenBucketScheduler
 from .sound import sound_manager
 from .sensors import sensor_poller, launch_lhm, stop_lhm
+from .fan_manager import FanManager, reset_fan_backend
 
 app = FastAPI(title="Baxters Hot Rod Tuner")
 
@@ -48,11 +50,34 @@ if _platform.system() == 'Windows':
 # Record server start time for uptime calculation (Seed A1-02)
 _SERVER_START_TIME: float = time.monotonic()
 
+# ── Heartbeat watchdog ───────────────────────────────────────────────
+# JS pings /api/heartbeat every 3 s while the window is open.
+# If no ping arrives for _HB_TIMEOUT seconds the server assumes the
+# window is gone and hard-exits, leaving no zombie process behind.
+_HB_TIMEOUT: float = 15.0  # seconds before giving up
+_last_heartbeat: float = 0.0  # 0 = no ping yet (grace period active)
+
+def _heartbeat_watchdog() -> None:
+    """Background thread: exits the process when the UI window disappears."""
+    # Grace period: give the browser time to load the page and start pinging.
+    time.sleep(_HB_TIMEOUT + 5)
+    while True:
+        time.sleep(3)
+        if _last_heartbeat == 0.0:
+            continue  # still in startup, no ping received yet
+        age = time.monotonic() - _last_heartbeat
+        if age > _HB_TIMEOUT:
+            _hrt_log.warning(
+                f'Heartbeat timeout ({age:.1f}s) — UI window closed. Exiting.'
+            )
+            _os._exit(0)
+
 # Global instances
 metrics_store = MetricsStore()
 policy_config = PolicyConfig()
 decision_engine = DecisionEngine(policy_config)
 scheduler = TokenBucketScheduler()
+fan_manager = FanManager()
 
 # Linked external apps: list of {app_name, exe_path, pid}
 _linked_apps: list = []
@@ -133,6 +158,21 @@ def _on_startup():
         _hrt_log.info('Linked-app reconnection disabled via HRT_DISABLE_LINKS')
     launch_lhm()
     sensor_poller.start()
+    # Start heartbeat watchdog (daemon — killed automatically if main exits)
+    threading.Thread(
+        target=_heartbeat_watchdog,
+        name='hrt-heartbeat-watchdog',
+        daemon=True,
+    ).start()
+    try:
+        fan_manager.start()
+        # Auto-raise fans when CPU temps climb — never overrides a higher user setting
+        def _fan_policy_hook():
+            snap = sensor_poller.snapshot()
+            return decision_engine.recommend_fan_aggressiveness(snap) if snap else 0
+        fan_manager.set_policy_hook(_fan_policy_hook)
+    except Exception as _e:
+        _hrt_log.error(f'fan_manager.start() failed: {_e}')
     _hrt_log.info('Startup complete: LHM launched, poller started')
 
 @app.on_event("shutdown")
@@ -149,6 +189,10 @@ def _on_shutdown():
         stop_lhm()
     except Exception as _e:
         _hrt_log.error(f'stop_lhm() failed: {_e}')
+    try:
+        fan_manager.stop()
+    except Exception as _e:
+        _hrt_log.error(f'fan_manager.stop() failed: {_e}')
 
 
 @app.get("/", include_in_schema=False)
@@ -183,6 +227,53 @@ def api_sensors():
     if snap:
         return snap.to_dict()
     return {"timestamp": 0, "sensors": []}
+
+
+class FanOptimizePayload(BaseModel):
+    aggressiveness: int
+
+
+@app.get('/api/fans')
+def api_fans():
+    """Return current fan manager state: aggressiveness, baselines, last targets."""
+    try:
+        return fan_manager.get_state()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/api/fans/backend')
+def api_fans_backend():
+    """Return which fan control backend is active on this machine."""
+    import hotrod_tuner.fan_manager as _fm
+    backend = _fm._BACKEND  # None = not yet detected
+    return {'backend': backend or 'unknown', 'detected': backend is not None}
+
+
+@app.post('/api/fans/backend/reset')
+def api_fans_backend_reset():
+    """Force re-detection of the fan control backend (e.g. after enabling Dell driver)."""
+    reset_fan_backend()
+    return {'ok': True, 'message': 'Backend reset — will re-detect on next fan apply'}
+
+
+@app.post('/api/fans/optimize')
+def api_fans_optimize(payload: FanOptimizePayload):
+    """Set requested fan aggressiveness (0-100). Server enforces never-below-baseline."""
+    try:
+        state = fan_manager.set_aggressiveness(payload.aggressiveness)
+        # Emit audit event
+        audit_event = {
+            'type': 'fan_optimize_set',
+            'timestamp': now_utc_iso(),
+            'aggressiveness': state.get('aggressiveness'),
+            'enable_write': state.get('enable_write'),
+            'capability': 'fan.optimize'
+        }
+        write_audit_event(Path('audit') / 'fan_manager.jsonl', audit_event)
+        return state
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ── API: which monitored processes are running ───────────────────────
@@ -233,6 +324,14 @@ def health():
     """Health check endpoint. Returns 200 with status and uptime_secs (Seed A1-02)."""
     uptime = time.monotonic() - _SERVER_START_TIME
     return {"status": "ok", "uptime_secs": round(uptime, 3)}
+
+
+@app.post("/api/heartbeat", include_in_schema=False)
+def heartbeat():
+    """UI liveness ping — resets the watchdog timer."""
+    global _last_heartbeat
+    _last_heartbeat = time.monotonic()
+    return {"ok": True}
 
 
 @app.get("/status")

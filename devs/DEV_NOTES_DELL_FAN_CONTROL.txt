@@ -1,0 +1,84 @@
+DEV NOTES — Dell Fan Control (bzh_dell_smm_io_x64.sys)
+=======================================================
+Machine: Dell 0K240Y (Precision workstation), Xeon E5-1620 v3
+Date: 2026-05-05
+
+PROBLEM
+-------
+LibreHardwareMonitor has zero SensorType.Control sensors on this Dell board.
+HrtFanControl.exe 50 prints: "Applied 50% to 0 fan control sensor(s)". Exit 1.
+Fan slider had no audible effect because LHM could not control Dell fans.
+
+SOLUTION — Dell SMM via DellSmbiosBzhLib (Rem0o/FanControl.DellPlugin)
+-----------------------------------------------------------------------
+1. Downloaded DellSmbiosBzhLib.dll + bzh_dell_smm_io_x64.sys from:
+   https://github.com/Rem0o/FanControl.DellPlugin/raw/master/Dlls/
+
+2. Wrote HrtDellFanControl.cs (in vendor/lhm/) — uses:
+     DellSmbiosBzh.Initialize()
+     DellSmbiosBzh.DisableAutomaticFanControl()
+     DellSmbiosBzh.SetFanLevel(BzhFanIndex.Fan1, BzhFanLevel.LevelX)
+   pct 0-33 → Level0, 34-66 → Level1, 67-100 → Level2
+   pct == 0 → EnableAutomaticFanControl() (hands back to BIOS)
+
+3. Compiled with:
+   cd vendor\lhm
+   C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /r:DellSmbiosBzhLib.dll /out:HrtDellFanControl.exe HrtDellFanControl.cs
+
+DRIVER SIGNING ISSUE
+--------------------
+bzh_dell_smm_io_x64.sys cert expired Jan 17 2020 — Windows refuses to load it
+by default. Two things needed (both require admin):
+
+Step 1 — Enable test signing (run from elevated 64-bit PowerShell):
+   bcdedit /set testsigning on
+   (reboot after)
+
+   NOTE: bcdedit.exe does not exist in SysWOW64. If PowerShell reports
+   "not recognized", you are in a 32-bit shell. Open a fresh admin window.
+   The UAC prompt must appear — title bar must say "Administrator: Windows PowerShell".
+
+Step 2 — Set CI Policy registry key (run from elevated PowerShell):
+   Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy" -Name "UpgradedSystem" -Value 0 -Type DWord -Force
+   (reboot after)
+
+   This tells Windows Code Integrity to use non-upgraded (less strict)
+   driver validation. The DellSmbiosBzhLib error message itself suggests this.
+
+RESULT
+------
+After both steps + two reboots:
+   vendor\lhm\HrtDellFanControl.exe 50
+   → [HrtDellFanControl] Set fans to Level1 (50%)   ✓
+
+IMPORTANT — ELEVATION REQUIRED AT RUNTIME
+------------------------------------------
+The kernel driver (bzh_dell_smm_io_x64.sys) requires SeLoadDriverPrivilege.
+HrtDellFanControl.exe must run as Administrator.
+The PyInstaller build already has uac_admin=True in Hot Rod Tuner.spec,
+so the final .exe self-elevates via UAC on launch. ✓
+
+During development (python run_server.py), run VS Code or the terminal as admin,
+OR the fan backend will fall back to 'none' (slider silently disabled).
+
+CODE CHANGES
+------------
+fan_manager.py:
+- Added _DELL_EXE path constant
+- _detect_backend() probes LHM first, then Dell SMM
+- _apply_pct_windows() dispatches to correct exe based on _BACKEND
+- Both subprocess.run calls pass cwd=str(exe.parent) so the shim finds
+  bzh_dell_smm_io_x64.sys in its own directory
+- reset_fan_backend() exported for /api/fans/backend/reset endpoint
+
+app.py:
+- GET /api/fans/backend — returns current backend name
+- POST /api/fans/backend/reset — clears cached backend, forces re-probe
+
+FILES IN vendor/lhm/
+--------------------
+  HrtFanControl.exe         — LHM backend (generic boards: ASUS/MSI/Gigabyte/etc.)
+  HrtDellFanControl.exe     — Dell SMM backend (this machine)
+  HrtDellFanControl.cs      — source for Dell shim
+  DellSmbiosBzhLib.dll      — Dell SMM library (Rem0o/FanControl.DellPlugin)
+  bzh_dell_smm_io_x64.sys   — kernel driver (expired cert — needs testsigning)
