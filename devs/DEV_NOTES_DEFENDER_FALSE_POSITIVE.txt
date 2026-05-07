@@ -1,0 +1,149 @@
+==============================================================================
+DEV NOTES: WINDOWS DEFENDER FALSE POSITIVE (LibreHardwareMonitor.sys)
+==============================================================================
+Last updated: 2026-05-07
+Relevant commits: b112120, 5078946
+Revert point (clean baseline): dafc2c6
+
+
+------------------------------------------------------------------------------
+THE PROBLEM
+------------------------------------------------------------------------------
+Windows Defender flags LibreHardwareMonitor.sys as a threat when it appears
+in %TEMP%. This is a false positive — LHM is a legitimate open-source
+hardware monitoring tool — but Defender quarantines the file, which breaks
+CPU temperature readings for the end user.
+
+Root cause chain:
+  1. LibreHardwareMonitor.exe (headless WMI provider for CPU temps) needs to
+     load its kernel driver (LibreHardwareMonitor.sys) at startup.
+  2. Internally, LHM extracts the driver to %TEMP%\ if no existing Windows
+     service (R0LibreHardwareMonitor) is registered for it.
+  3. %TEMP% is a high-risk location that Defender watches aggressively.
+  4. A kernel .sys file appearing in %TEMP% triggers the false positive.
+
+This is baked into LHM's binary — we cannot patch it without rebuilding LHM
+from source.
+
+
+------------------------------------------------------------------------------
+WHAT WE TRIED (FAILED)
+------------------------------------------------------------------------------
+1. Bundling vendor/lhm inside the PyInstaller package (datas=[]).
+   Result: PyInstaller extracts all bundled files to a %TEMP% subfolder
+   (_MEIxxxxxx) on every run. Made things WORSE — both the LHM exe and the
+   .sys landed in %TEMP% simultaneously.
+   Fix: Removed vendor/lhm from spec datas. Copied manually to dist\vendor\lhm
+   after build (stable, non-temp path).
+
+2. Setting cwd=str(exe.parent) on subprocess.run for HrtFanControl.exe.
+   Result: Fixed the fan control shim's driver write location, but LHM.exe
+   manages its own driver extraction internally — our CWD flag has no effect
+   on it.
+
+3. Manual Defender exclusion (Add-MpPreference -ExclusionPath).
+   Result: Works on Baxter's machine but is not a solution for end users.
+   We can't require every user to manually whitelist a path before first run.
+
+
+------------------------------------------------------------------------------
+THE SOLUTION (CURRENT IMPLEMENTATION)
+------------------------------------------------------------------------------
+Two-layer approach in src/hotrod_tuner/sensors.py and app.py:
+
+LAYER 1 — Driver pre-registration (sensors.py: _preregister_lhm_driver)
+  Before launching LHM.exe, HRT calls sc.exe to register the kernel service
+  R0LibreHardwareMonitor pointing to our stable dist\vendor\lhm path:
+
+    sc.exe create R0LibreHardwareMonitor type= kernel start= demand
+           binPath= <exe_dir>\vendor\lhm\LibreHardwareMonitor.sys
+
+  LHM checks whether this service already exists before doing its own
+  extraction. If it finds an existing service, it skips %TEMP% entirely and
+  loads the driver from the registered path.
+
+  This is the root fix. %TEMP% is never touched.
+
+LAYER 2 — Auto Defender exclusion (app.py: _on_startup)
+  HRT runs elevated (uac_admin=True in spec). On every startup it silently
+  calls Add-MpPreference -ExclusionPath for the vendor/lhm directory:
+
+    powershell -Command "Add-MpPreference -ExclusionPath '<path>' ..."
+
+  This is belt-and-suspenders. If Layer 1 ever fails (e.g. on a future OS
+  that behaves differently), the exclusion is already in place.
+
+HARD GATE — Do not launch LHM if pre-registration fails
+  _preregister_lhm_driver() returns bool. If it returns False for any reason,
+  launch_lhm() returns False immediately and LHM.exe is NEVER started.
+  
+  Rationale: missing CPU temperature readings is recoverable (user sees dashes
+  on the gauges). A Defender quarantine event on an end user's machine is not
+  recoverable without manual intervention and destroys trust. We choose
+  degraded functionality over a security alert.
+
+
+------------------------------------------------------------------------------
+FAILURE MODES AND HOW TO DIAGNOSE
+------------------------------------------------------------------------------
+If an end user reports "no temperature readings":
+
+  1. Check dist\data\hrt_server.log for one of these lines:
+       [HRT] LHM driver registered at ...\vendor\lhm\LibreHardwareMonitor.sys
+       [HRT] LHM driver already registered at ...
+       [HRT] LHM driver service creation failed (rc=X) — sc.exe: <error>
+       [HRT] LibreHardwareMonitor.sys missing — skipping LHM to avoid AV flag
+       [HRT] LHM driver pre-registration error: <exception>
+
+  2. If sc.exe creation failed (rc != 0):
+       - Most common cause: exe not running as admin (UAC was declined).
+         The spec sets uac_admin=True but the user may have clicked "No".
+       - Less common: Group Policy blocks kernel service creation.
+       - Check the sc.exe stderr message logged alongside the rc.
+
+  3. If .sys file is missing:
+       - Defender may have quarantined it from vendor/lhm despite Layer 2.
+         Tell user to restore from Defender quarantine and add exclusion.
+       - Or the user didn't copy vendor/lhm next to the exe after building.
+         Build step: Copy-Item -Recurse -Force vendor\lhm dist\vendor\lhm
+
+  4. If WMI poll returns no cpu_core_* sensors despite LHM running:
+       - LHM WMI namespace may not be ready yet. Sensors.py retries
+         automatically (_wmi_conn reset to None on zero CPU temps).
+       - Wait ~30s after launch for LHM to fully initialize.
+
+
+------------------------------------------------------------------------------
+SERVICE NAME REFERENCE
+------------------------------------------------------------------------------
+  Service name:   R0LibreHardwareMonitor
+  Service type:   kernel
+  Start type:     demand (manual, started by HRT on each run)
+  Driver path:    <exe_dir>\vendor\lhm\LibreHardwareMonitor.sys
+
+To manually inspect on a target machine:
+  sc.exe qc R0LibreHardwareMonitor
+  sc.exe query R0LibreHardwareMonitor
+
+
+------------------------------------------------------------------------------
+BUILD / DEPLOY CHECKLIST (after pyinstaller build)
+------------------------------------------------------------------------------
+  1. pyinstaller "Hot Rod Tuner.spec"
+  2. Copy-Item -Recurse -Force vendor\lhm dist\vendor\lhm
+  3. Confirm dist\vendor\lhm\LibreHardwareMonitor.sys exists
+  4. (Optional) Verify sc.exe create works by running the exe once as admin
+     and checking hrt_server.log for "LHM driver registered"
+
+
+------------------------------------------------------------------------------
+RELATED FILES
+------------------------------------------------------------------------------
+  src/hotrod_tuner/sensors.py   — _preregister_lhm_driver(), launch_lhm()
+  src/hotrod_tuner/app.py       — _on_startup() Defender exclusion block
+  vendor/lhm/                   — Source copies of all LHM + Dell binaries
+  dist/vendor/lhm/              — Runtime copies next to the built exe
+                                  (not in git — copy after each build)
+  Hot Rod Tuner.spec            — vendor/lhm intentionally NOT in datas[]
+
+==============================================================================
