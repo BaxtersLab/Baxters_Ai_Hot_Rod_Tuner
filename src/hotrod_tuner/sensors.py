@@ -73,42 +73,67 @@ def _download_lhm() -> bool:
         return False
 
 
-def _preregister_lhm_driver() -> None:
+def _preregister_lhm_driver() -> bool:
     """Register R0LibreHardwareMonitor kernel service to our stable vendor/lhm path.
 
     LHM checks whether the service already exists before extracting its driver to
-    %TEMP%.  Pre-registering it to our whitelisted stable path means LHM skips the
-    temp-dir extraction on every launch, preventing Defender false positives for end
-    users.  Safe no-op if sc.exe is unavailable or the .sys file is missing.
+    %TEMP%.  Pre-registering it here means LHM skips temp-dir extraction entirely,
+    preventing Defender false positives on end-user machines.
+
+    Returns True if the service is ready, False if setup failed.
+    Callers MUST NOT launch LHM when this returns False — better no thermals
+    than a Defender quarantine event on the end user's machine.
     """
     import subprocess as _sp
     try:
         sys_file = _lhm_vendor_dir() / "LibreHardwareMonitor.sys"
         if not sys_file.is_file():
-            return
+            print("[HRT] LibreHardwareMonitor.sys missing — skipping LHM to avoid AV flag")
+            return False
+
+        # If the service already exists and points to our stable path, just start it.
+        query = _sp.run(['sc.exe', 'qc', 'R0LibreHardwareMonitor'],
+                        capture_output=True, text=True, timeout=10)
+        if query.returncode == 0 and str(sys_file).lower() in query.stdout.lower():
+            _sp.run(['sc.exe', 'start', 'R0LibreHardwareMonitor'],
+                    capture_output=True, timeout=10)
+            print(f"[HRT] LHM driver already registered at {sys_file}")
+            return True
+
+        # Remove any stale registration pointing elsewhere.
         _sp.run(['sc.exe', 'stop', 'R0LibreHardwareMonitor'],
                 capture_output=True, timeout=10)
         _sp.run(['sc.exe', 'delete', 'R0LibreHardwareMonitor'],
                 capture_output=True, timeout=10)
+
         result = _sp.run(
             ['sc.exe', 'create', 'R0LibreHardwareMonitor',
              'type=', 'kernel', 'start=', 'demand',
              'binPath=', str(sys_file)],
-            capture_output=True, timeout=10
+            capture_output=True, text=True, timeout=10
         )
-        if result.returncode == 0:
-            _sp.run(['sc.exe', 'start', 'R0LibreHardwareMonitor'],
-                    capture_output=True, timeout=10)
-            print(f"[HRT] LHM driver registered at {sys_file}")
+        if result.returncode != 0:
+            print(f"[HRT] LHM driver service creation failed (rc={result.returncode}) "
+                  f"— skipping LHM to avoid AV flag. sc.exe: {result.stderr.strip()}")
+            return False
+
+        _sp.run(['sc.exe', 'start', 'R0LibreHardwareMonitor'],
+                capture_output=True, timeout=10)
+        print(f"[HRT] LHM driver registered at {sys_file}")
+        return True
     except Exception as _e:
-        print(f"[HRT] LHM driver pre-registration skipped: {_e}")
+        print(f"[HRT] LHM driver pre-registration error: {_e} — skipping LHM to avoid AV flag")
+        return False
 
 
 def launch_lhm() -> bool:
     """Start LibreHardwareMonitor headless if not already running. Returns True if running."""
     global _lhm_process
-    # Pre-register kernel driver to stable path so LHM skips %TEMP% extraction
-    _preregister_lhm_driver()
+    # Pre-register kernel driver to stable path so LHM skips %TEMP% extraction.
+    # Hard gate: if registration fails we do NOT launch LHM — a quarantine event
+    # on the end-user's machine is worse than missing CPU temperature readings.
+    if not _preregister_lhm_driver():
+        return False
     # Check if already running
     for p in psutil.process_iter(["name"]):
         try:
