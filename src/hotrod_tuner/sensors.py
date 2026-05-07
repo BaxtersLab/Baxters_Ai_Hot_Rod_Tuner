@@ -32,7 +32,10 @@ _LHM_ZIP_URL = f"https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/re
 
 
 def _lhm_vendor_dir() -> Path:
-    return Path(__file__).resolve().parent.parent.parent / "vendor" / "lhm"
+    import sys as _sys
+    if getattr(_sys, 'frozen', False):
+        return Path(_sys.executable).parent / 'vendor' / 'lhm'
+    return Path(__file__).resolve().parent.parent.parent / 'vendor' / 'lhm'
 
 
 def _find_lhm_exe() -> Optional[str]:

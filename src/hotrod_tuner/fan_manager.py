@@ -199,7 +199,7 @@ def _is_gpu_fan(sensor_name: str) -> bool:
 
 import sys as _sys
 _VENDOR_DIR = (
-    Path(_sys._MEIPASS) / 'vendor' / 'lhm'
+    Path(_sys.executable).parent / 'vendor' / 'lhm'
     if getattr(_sys, 'frozen', False)
     else Path(__file__).resolve().parent.parent.parent / 'vendor' / 'lhm'
 )

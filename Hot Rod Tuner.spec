@@ -5,7 +5,7 @@ a = Analysis(
     ['run_server.py'],
     pathex=['src'],
     binaries=[],
-    datas=[('static', 'static'), ('assets', 'assets'), ('vendor/lhm', 'vendor/lhm')],
+    datas=[('static', 'static'), ('assets', 'assets')],
     hiddenimports=['hotrod_tuner', 'hotrod_tuner.app', 'hotrod_tuner.metrics', 'hotrod_tuner.policies', 'hotrod_tuner.scheduler', 'hotrod_tuner.sensors', 'hotrod_tuner.sound', 'hotrod_tuner.splash', 'hotrod_tuner.telemetry_pipe', 'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan', 'uvicorn.lifespan.on', 'uvicorn.lifespan.off', 'wmi', 'psutil', 'websockets'],
     hookspath=[],
     hooksconfig={},
