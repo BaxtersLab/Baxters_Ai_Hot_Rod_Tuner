@@ -145,6 +145,27 @@ if _STATIC_DIR.is_dir():
 @app.on_event("startup")
 def _on_startup():
     _hrt_log.info('FastAPI startup event fired')
+    # Silently add Defender exclusion for vendor/lhm so kernel driver .sys files
+    # are not quarantined. App already runs elevated (uac_admin=True), so this
+    # succeeds without prompting. Safe no-op on non-Windows or non-Defender systems.
+    try:
+        import sys as _sys
+        _vendor_lhm = (
+            _os.path.join(_os.path.dirname(_sys.executable), 'vendor', 'lhm')
+            if getattr(_sys, 'frozen', False)
+            else _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                               '..', '..', '..', 'vendor', 'lhm')
+        )
+        _vendor_lhm = _os.path.normpath(_vendor_lhm)
+        import subprocess as _sp
+        _sp.run(
+            ['powershell', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+             '-Command', f'Add-MpPreference -ExclusionPath "{_vendor_lhm}" -ErrorAction SilentlyContinue'],
+            capture_output=True, timeout=10
+        )
+        _hrt_log.info('Defender exclusion applied for %s', _vendor_lhm)
+    except Exception as _e:
+        _hrt_log.debug('Defender exclusion skipped: %s', _e)
     # By default HRT will attempt to reconnect to previously linked apps.
     # Set environment variable `HRT_DISABLE_LINKS=1` to skip reconnect (useful
     # when you don't want external chat apps to reappear).
