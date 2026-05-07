@@ -39,6 +39,21 @@ Built for homelab rigs running local AI workloads where thermal runaway can dama
 - Microsoft Edge (for app-mode dashboard window)
 - Admin privileges (for WMI sensor access)
 
+## Windows Defender note
+
+`LibreHardwareMonitor.sys` is a kernel driver that reads hardware sensors at ring-0. Windows Defender may flag it as a false positive (`HackTool` or `RiskWare`). This is a known issue with all hardware-monitor tools that use kernel drivers.
+
+**If Defender removes or quarantines the driver**, add an exclusion from an elevated PowerShell:
+
+```powershell
+Add-MpPreference -ExclusionPath "$PSScriptRoot\vendor\lhm"
+```
+
+Or restore the quarantined file from Windows Security → Protection history → Allow.
+
+The driver is the unmodified official LHM release, source available at [LibreHardwareMonitor/LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor).
+
+
 ## Quick Start
 
 ```bash
