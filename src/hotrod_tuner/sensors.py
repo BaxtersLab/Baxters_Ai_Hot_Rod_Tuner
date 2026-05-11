@@ -455,8 +455,27 @@ class SensorPoller:
 
         logged_once = getattr(self, '_wmi_logged', False)
 
+        # Fetch WMI sensor list in a separate thread with a hard timeout.
+        # WMI COM objects can hang indefinitely after hours of uptime if the
+        # LHM namespace becomes stale — this prevents blocking the poll loop.
+        _wmi_sensors = []
+        _wmi_ok = [False]
+        def _fetch_wmi():
+            try:
+                _wmi_sensors.extend(self._wmi_conn.Sensor())
+                _wmi_ok[0] = True
+            except Exception:
+                pass
+        _t = threading.Thread(target=_fetch_wmi, daemon=True)
+        _t.start()
+        _t.join(timeout=4.0)
+        if not _wmi_ok[0]:
+            # Timed out or failed — drop the stale connection and retry next poll
+            self._wmi_conn = None
+            return
+
         try:
-            for sensor in self._wmi_conn.Sensor():
+            for sensor in _wmi_sensors:
                 s_type = sensor.SensorType.lower() if sensor.SensorType else ""
                 value = sensor.Value
                 if value is None:

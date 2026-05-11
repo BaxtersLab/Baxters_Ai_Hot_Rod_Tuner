@@ -244,6 +244,8 @@
 
 // ── State ───────────────────────────────────────────────────────────
 let ws = null;
+let _wsReconnectTimer = null;  // pending reconnect setTimeout id
+let _wsDelay = 2000;           // current reconnect delay (ms), exponential backoff
 let processes = [];      // [{path, running}]
 let audioCtx = null;
 let currentAlertLevel = "none";
@@ -298,20 +300,34 @@ document.getElementById("gearBtn").addEventListener("click", () => {
 });
 
 // ── WebSocket ───────────────────────────────────────────────────────
+function _scheduleReconnect() {
+  if (_wsReconnectTimer) return; // already scheduled
+  document.getElementById("connDot").className = "dot reconn";
+  document.getElementById("connText").textContent = "";
+  _wsReconnectTimer = setTimeout(() => {
+    _wsReconnectTimer = null;
+    connectWs();
+  }, _wsDelay);
+  // Exponential backoff: 2s → 4s → 8s → 16s → 20s max
+  _wsDelay = Math.min(_wsDelay * 2, 20000);
+}
+
 function connectWs() {
+  // Cancel any pending reconnect timer — we're connecting now
+  if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
+  // Close any half-open socket without triggering onclose
+  if (ws) { try { ws.onclose = null; ws.onerror = null; ws.close(); } catch(e) {} ws = null; }
+
   const loc = window.location;
   const proto = loc.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${proto}//${loc.host}/ws/sensors`);
   ws.onopen = () => {
+    _wsDelay = 2000; // reset backoff on successful connect
     document.getElementById("connDot").className = "dot ok";
     document.getElementById("connText").textContent = "Live";
   };
-  ws.onclose = () => {
-    document.getElementById("connDot").className = "dot reconn";
-    document.getElementById("connText").textContent = "";
-    setTimeout(connectWs, 60000);
-  };
-  ws.onerror = () => ws.close();
+  ws.onclose = () => { ws = null; _scheduleReconnect(); };
+  ws.onerror = () => { if (ws) { try { ws.onclose = null; ws.close(); } catch(e) {} ws = null; } _scheduleReconnect(); };
   ws.onmessage = (ev) => {
     try {
       const snap = JSON.parse(ev.data);
@@ -628,14 +644,8 @@ function esc(s) { const d = document.createElement("div"); d.textContent = s; re
 function basename(p) { return p.split(/[\\/]/).pop() || p; }
 
 // ── Close guard ─────────────────────────────────────────────────────
+// _cachedLinked is kept fresh by the unified 3s setInterval below
 let _cachedLinked = [];
-async function _fetchLinkedForClose() {
-  try {
-    const r = await fetch("/link");
-    if (r.ok) { const d = await r.json(); _cachedLinked = d.linked_apps || []; }
-  } catch(e) {}
-}
-setInterval(_fetchLinkedForClose, 3000);
 
 window.addEventListener('beforeunload', (e) => {
   const monitored = [...processes.map(p => basename(p.path)), ..._cachedLinked.map(a => a.app_name)];
@@ -646,8 +656,10 @@ window.addEventListener('beforeunload', (e) => {
 
 // ── Reset (blue title button) ───────────────────────────────────────
 function resetApp() {
-  // 1. Close existing WebSocket
-  if (ws) { try { ws.onclose = null; ws.close(); } catch(e) {} ws = null; }
+  // 1. Close existing WebSocket and cancel any pending reconnect timer
+  if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
+  _wsDelay = 2000; // reset backoff so reconnect is immediate
+  if (ws) { try { ws.onclose = null; ws.onerror = null; ws.close(); } catch(e) {} ws = null; }
 
   // 2. Clear all sensor lanes
   document.getElementById("lanePanel").innerHTML = "";
@@ -737,20 +749,41 @@ async function initFanControls(){
 
 renderProcesses();
 connectWs();
-setInterval(() => { refreshProcStatus(); refreshLinked(); }, 3000);
+// Single interval: refresh proc status + linked apps + update close-guard cache together
+setInterval(async () => {
+  refreshProcStatus();
+  try {
+    const r = await fetch("/link");
+    if (r.ok) {
+      const d = await r.json();
+      _cachedLinked = d.linked_apps || [];
+      const el = document.getElementById("linkedList");
+      if (!d.linked_apps || d.linked_apps.length === 0) {
+        el.innerHTML = '<span class="no-links">None</span>';
+      } else {
+        el.innerHTML = "";
+        for (const a of d.linked_apps) {
+          const row = document.createElement("div");
+          row.className = "linked-item";
+          row.innerHTML = `<div class="l-dot"></div><div class="l-name">${esc(a.app_name)}</div><div class="l-pid">pid ${a.pid}</div>`;
+          el.appendChild(row);
+        }
+      }
+    }
+  } catch(e) {}
+}, 3000);
 initFanControls();
 // Heartbeat: keep the server alive while this window is open.
 // Server exits automatically if pings stop (window closed / crash).
 setInterval(() => { fetch('/api/heartbeat', {method:'POST'}).catch(()=>{}); }, 3000);
-// Watchdog: if no WS data for 60s, reconnect quietly
+// Watchdog: if no WS data for 15s, reconnect quietly
 setInterval(() => {
-  if (lastWsTime > 0 && Date.now() - lastWsTime > 60000) {
-    document.getElementById("connDot").className = "dot reconn";
-    document.getElementById("connText").textContent = "";
-    if (ws) { try { ws.onclose = null; ws.close(); } catch(e) {} ws = null; }
+  if (lastWsTime > 0 && Date.now() - lastWsTime > 15000) {
+    if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
+    _wsDelay = 2000; // reset backoff for watchdog-triggered reconnect
     connectWs();
   }
-}, 60000);
+}, 15000);
 
 // ── Sound folder button + label ─────────────────────────────────────
 document.getElementById("soundFolderBtn").addEventListener("click", () => {
