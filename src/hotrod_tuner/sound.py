@@ -1,22 +1,37 @@
 """Sound manager for Hot Rod Tuner startup sounds."""
 import os
+import shutil
+import subprocess
 import sys
 import threading
 from pathlib import Path
 from typing import Optional
 
-# Use winsound on Windows (built-in, works in frozen exe)
-# Fall back to playsound on other platforms
+# Use winsound on Windows (built-in, works in frozen exe).
+#
+# On Linux, prefer a command-line player over `playsound`: playsound 1.3 has no
+# native backend there and reaches audio through GStreamer via PyGObject, which
+# is a large binding stack that cannot be installed by pip on a PEP 668 system.
+# pw-play (PipeWire) and aplay (ALSA) ship with the desktop, cost one short-
+# lived process per sound, and cannot wedge the server if audio is misconfigured.
+_LINUX_PLAYER = None
 SOUND_BACKEND = None
 try:
     import winsound
     SOUND_BACKEND = "winsound"
 except ImportError:
-    try:
-        from playsound import playsound
-        SOUND_BACKEND = "playsound"
-    except ImportError:
-        print("Warning: no sound backend available. Sound functionality will be disabled.")
+    for _cand in ("pw-play", "paplay", "aplay", "ffplay"):
+        _path = shutil.which(_cand)
+        if _path:
+            _LINUX_PLAYER = _path
+            SOUND_BACKEND = "command"
+            break
+    if SOUND_BACKEND is None:
+        try:
+            from playsound import playsound
+            SOUND_BACKEND = "playsound"
+        except ImportError:
+            print("Warning: no sound backend available. Sound functionality will be disabled.")
 
 
 class SoundManager:
@@ -74,6 +89,14 @@ class SoundManager:
         try:
             if SOUND_BACKEND == "winsound":
                 winsound.PlaySound(sound_file, winsound.SND_FILENAME)
+            elif SOUND_BACKEND == "command":
+                argv = [_LINUX_PLAYER]
+                if _LINUX_PLAYER.endswith("ffplay"):
+                    argv += ["-nodisp", "-autoexit", "-loglevel", "quiet"]
+                # Capped wait: a startup chime is ~2s, and a player left blocked
+                # on a dead audio server must not pin this thread forever.
+                subprocess.run(argv + [sound_file], timeout=30,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             elif SOUND_BACKEND == "playsound":
                 playsound(sound_file)
             return True

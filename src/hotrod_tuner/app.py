@@ -125,8 +125,13 @@ def _load_linked():
     except Exception as e:
         print(f'[HRT] WARNING: could not load linked apps: {e}')
 
-# Play startup sound on app initialization
-sound_manager.play_startup_sound(blocking=False)
+# Startup sound is played by the FastAPI startup event, not here.
+#
+# At module scope it fired on *import*, which meant twice on a normal launch
+# (run_server.py plays it too, then imports this module) and once for anything
+# that merely imports the app — tests, `run.sh check`, tooling. Moving it to the
+# startup event ties it to the server actually coming up, which is the event it
+# is meant to signal, and gives exactly one play per entry point.
 
 # ── Static files + GUI root ──────────────────────────────────────────
 import sys as _sys
@@ -145,6 +150,7 @@ if _STATIC_DIR.is_dir():
 @app.on_event("startup")
 def _on_startup():
     _hrt_log.info('FastAPI startup event fired')
+    sound_manager.play_startup_sound(blocking=False)
     # Silently add Defender exclusion for vendor/lhm so kernel driver .sys files
     # are not quarantined. App already runs elevated (uac_admin=True), so this
     # succeeds without prompting. Safe no-op on non-Windows or non-Defender systems.
@@ -271,10 +277,19 @@ def api_fans():
 
 @app.get('/api/fans/backend')
 def api_fans_backend():
-    """Return which fan control backend is active on this machine."""
+    """Return which fan control backend is active on this machine.
+
+    `reason` is populated when detection ran and found no usable backend, so the
+    UI can say why the slider is inert instead of leaving the operator guessing
+    (on Linux the usual answer is that the pwm nodes are root-owned).
+    """
     import hotrod_tuner.fan_manager as _fm
     backend = _fm._BACKEND  # None = not yet detected
-    return {'backend': backend or 'unknown', 'detected': backend is not None}
+    return {
+        'backend': backend or 'unknown',
+        'detected': backend is not None,
+        'reason': getattr(_fm, '_linux_detect_reason', '') if backend == 'none' else '',
+    }
 
 
 @app.post('/api/fans/backend/reset')

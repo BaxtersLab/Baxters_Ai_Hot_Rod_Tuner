@@ -127,8 +127,18 @@ def _preregister_lhm_driver() -> bool:
 
 
 def launch_lhm() -> bool:
-    """Start LibreHardwareMonitor headless if not already running. Returns True if running."""
+    """Start LibreHardwareMonitor headless if not already running. Returns True if running.
+
+    Windows only. LHM exists solely because Windows exposes no kernel interface
+    for CPU/fan sensors — it ships a signed ring-0 driver to read them. Linux
+    reports the same counters through mainline hwmon, which `_read_all()`
+    already reads via psutil, so there is nothing to launch. Guarded here
+    rather than at the call site because app.py's startup event calls this
+    unconditionally, and the sc.exe/ShellExecuteW path below would raise.
+    """
     global _lhm_process
+    if platform.system() != "Windows":
+        return False
     # Pre-register kernel driver to stable path so LHM skips %TEMP% extraction.
     # Hard gate: if registration fails we do NOT launch LHM — a quarantine event
     # on the end-user's machine is worse than missing CPU temperature readings.
@@ -179,7 +189,9 @@ def launch_lhm() -> bool:
 
 
 def stop_lhm():
-    """Terminate LHM if we started it."""
+    """Terminate LHM if we started it. No-op off Windows — see launch_lhm()."""
+    if platform.system() != "Windows":
+        return
     for p in psutil.process_iter(["name"]):
         try:
             if (p.info.get("name") or "").lower() == "librehardwaremonitor.exe":
@@ -187,6 +199,18 @@ def stop_lhm():
                 p.wait(timeout=5)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
+
+
+def _uniq(name: str, used: dict) -> str:
+    """Return `name`, suffixed with an index if it has already been used.
+
+    Sensor *names* are the dedup key and must be unique; sensor *labels* come
+    from the kernel and are not. First use is returned unchanged so existing
+    names stay stable; repeats become name_2, name_3, ...
+    """
+    n = used.get(name, 0) + 1
+    used[name] = n
+    return name if n == 1 else f"{name}_{n}"
 
 
 @dataclass
@@ -346,14 +370,21 @@ class SensorPoller:
         ))
 
         # ── Temperatures via psutil (Linux, some Windows) ──
+        # Labels are NOT unique: dell_smm reports three separate DIMM probes all
+        # labelled "SODIMM". Keying on the label alone made them collide, and the
+        # dedup pass at the end of this method then kept only the first — which
+        # on this hardware is the unpopulated 0.0 C slot, silently discarding the
+        # two real readings. _uniq() appends an index on collision only, so
+        # already-unique names are unchanged.
         try:
             temps = psutil.sensors_temperatures()
             if temps:
                 for chip, entries in temps.items():
+                    used: dict = {}
                     for entry in entries:
                         label = entry.label or chip
                         snap.sensors.append(SensorReading(
-                            name=f"temp_{chip}_{label}".replace(" ", "_").lower(),
+                            name=_uniq(f"temp_{chip}_{label}".replace(" ", "_").lower(), used),
                             label=f"{label} ({chip})",
                             value=entry.current,
                             unit="°C",
@@ -394,15 +425,20 @@ class SensorPoller:
                         ))
 
         # ── Fan speeds via psutil ──
+        # Same collision as temperatures: dell_smm labels fans 2-4 all "Other
+        # Fan", so three of this machine's four fans shared one name and two
+        # were dropped by the dedup pass. Disambiguate before that runs.
         try:
             fans = psutil.sensors_fans()
             if fans:
                 for chip, entries in fans.items():
-                    for entry in entries:
+                    used: dict = {}
+                    for idx, entry in enumerate(entries, start=1):
                         label = entry.label or chip
                         snap.sensors.append(SensorReading(
-                            name=f"fan_{chip}_{label}".replace(" ", "_").lower(),
-                            label=f"{label} ({chip})",
+                            name=_uniq(f"fan_{chip}_{label}".replace(" ", "_").lower(), used),
+                            label=f"{label} ({chip})" if label != "Other Fan"
+                                  else f"Fan {idx} ({chip})",
                             value=entry.current,
                             unit="RPM",
                             category="fan",

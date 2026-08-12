@@ -24,17 +24,24 @@ _run_log.addHandler(_run_fh)
 # ── DO NOT redirect stdout/stderr — asyncio writes from non-main
 #    threads and a replaced file object causes crashes at ~20s ────
 
+IS_WIN = sys.platform == "win32"
+
 # ── Console ctrl handler — MUST live in __main__ module to avoid GC ──
-import ctypes as _ct
-_HANDLER_ROUTINE = _ct.WINFUNCTYPE(_ct.c_int, _ct.c_uint)
-@_HANDLER_ROUTINE
-def _main_console_handler(event):
-    _run_log.warning(f'[run_server] Console control event: {event}')
-    return 1  # Block ExitProcess
-# Store globally so it can NEVER be garbage collected
-_PREVENT_GC_CONSOLE_HANDLER = _main_console_handler
-_ct.windll.kernel32.SetConsoleCtrlHandler(_main_console_handler, 1)
-_run_log.info('Console ctrl handler installed in __main__')
+# Windows only: ctypes.WINFUNCTYPE and ctypes.windll do not exist on POSIX,
+# so touching them at module scope aborted the import before anything ran.
+# POSIX has no console-control-event concept; SIGINT/SIGTERM already arrive
+# as ordinary signals and are handled by the KeyboardInterrupt path below.
+if IS_WIN:
+    import ctypes as _ct
+    _HANDLER_ROUTINE = _ct.WINFUNCTYPE(_ct.c_int, _ct.c_uint)
+    @_HANDLER_ROUTINE
+    def _main_console_handler(event):
+        _run_log.warning(f'[run_server] Console control event: {event}')
+        return 1  # Block ExitProcess
+    # Store globally so it can NEVER be garbage collected
+    _PREVENT_GC_CONSOLE_HANDLER = _main_console_handler
+    _ct.windll.kernel32.SetConsoleCtrlHandler(_main_console_handler, 1)
+    _run_log.info('Console ctrl handler installed in __main__')
 
 # ── atexit: last-resort logging before process exit ──────────────────
 import atexit as _atexit
@@ -110,11 +117,64 @@ def _watch_browser_and_exit(proc: subprocess.Popen) -> None:
 
     _run_log.info('HRT browser window closed — shutting down all processes')
     _run_fh.flush()
+
+    # os._exit() runs no atexit handlers and no FastAPI shutdown event, so any
+    # fan we switched to manual would stay latched at that duty with the EC no
+    # longer ramping it. Release before exiting; this is the one cleanup that
+    # cannot be skipped.
+    try:
+        from hotrod_tuner.fan_manager import release_fans_now
+        release_fans_now()
+    except Exception as _e:
+        _run_log.critical(f'Fan release before exit failed: {_e}')
+    _run_fh.flush()
+
     # Hard-exit: kills all daemon threads (uvicorn, sensor poller, LHM)
     # in one shot.  No need to call stop_lhm() separately — process death
     # is the cleanest shutdown.
     import os as _os
     _os._exit(0)
+
+
+def _webkit_available() -> bool:
+    """True if the GTK3 + WebKit2 bindings the floater needs are importable.
+
+    Checked in a subprocess: importing Gtk in this process would initialise GTK
+    inside the server, and the splash already owns a Tk main loop here.
+    """
+    probe = ("import gi; gi.require_version('Gtk','3.0'); "
+             "gi.require_version('WebKit2','4.1'); "
+             "from gi.repository import Gtk, WebKit2")
+    try:
+        return subprocess.run([sys.executable, "-c", probe],
+                              stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL,
+                              timeout=20).returncode == 0
+    except Exception:
+        return False
+
+
+def _screen_size_linux(default=(1920, 1080)) -> tuple[int, int]:
+    """Primary display size on Linux, read from sysfs.
+
+    Deliberately does NOT shell out to xrandr/xdpyinfo: those are X11-only and
+    return nothing under a Wayland session. /sys/class/drm is a read-only
+    kernel interface that reports the same modes either way, and reading it
+    cannot perturb the display configuration.
+    """
+    import glob
+    for status_path in sorted(glob.glob('/sys/class/drm/card*/status')):
+        try:
+            with open(status_path) as fh:
+                if fh.read().strip() != 'connected':
+                    continue
+            with open(os.path.join(os.path.dirname(status_path), 'modes')) as fh:
+                first = fh.readline().strip()
+            w, _, h = first.partition('x')
+            return int(w), int(h)
+        except (OSError, ValueError):
+            continue
+    return default
 
 
 def _open_app_window(url: str, width: int = 200, height: int = 450, wait_splash: bool = True):
@@ -130,26 +190,40 @@ def _open_app_window(url: str, width: int = 200, height: int = 450, wait_splash:
         _splash_done.wait(timeout=25)
 
     # Nuke cached Edge/Chrome window geometry so our size flags are always respected
-    cache_dir = os.path.join(os.environ.get('TEMP', '.'), 'hrt-app-window')
+    import tempfile as _tf
+    cache_dir = os.path.join(_tf.gettempdir(), 'hrt-app-window')
     try:
         import shutil as _sh
         _sh.rmtree(cache_dir, ignore_errors=True)
     except Exception:
         pass
 
-    edge = shutil.which("msedge") or r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-    chrome = shutil.which("chrome") or shutil.which("google-chrome")
-    chrome_paths = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    ]
+    # Chromium-family browsers, in preference order. shutil.which() covers the
+    # PATH-installed Linux builds; the absolute paths are the Windows installs,
+    # which never appear on PATH.
+    if IS_WIN:
+        candidates = [
+            shutil.which("msedge"),
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            shutil.which("chrome"),
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ]
+    else:
+        candidates = [shutil.which(b) for b in (
+            "google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+            "brave-browser", "microsoft-edge", "microsoft-edge-stable",
+        )]
 
-    # Position at bottom-right corner of desktop
+    # Position at bottom-right corner of desktop.
     try:
-        import ctypes
-        user32 = ctypes.windll.user32
-        scr_w = user32.GetSystemMetrics(0)
-        scr_h = user32.GetSystemMetrics(1)
+        if IS_WIN:
+            import ctypes
+            user32 = ctypes.windll.user32
+            scr_w = user32.GetSystemMetrics(0)
+            scr_h = user32.GetSystemMetrics(1)
+        else:
+            scr_w, scr_h = _screen_size_linux()
         x = scr_w - width - 12
         y = scr_h - height - 48  # above taskbar
     except Exception:
@@ -160,19 +234,64 @@ def _open_app_window(url: str, width: int = 200, height: int = 450, wait_splash:
         f"--window-size={width},{height}",
         f"--window-position={x},{y}",
         "--disable-extensions",
-        f"--user-data-dir={os.path.join(os.environ.get('TEMP', '.'), 'hrt-app-window')}",
+        f"--user-data-dir={cache_dir}",
     ]
 
+    # VS Code's extension host exports ELECTRON_RUN_AS_NODE=1, and it is
+    # inherited by everything launched from a terminal inside it. A Chromium
+    # binary that sees it starts as a bare Node runtime and rejects its own
+    # browser flags, so the window never appears. Strip it for the child.
+    child_env = {k: v for k, v in os.environ.items() if k != 'ELECTRON_RUN_AS_NODE'}
+
     proc = None
-    if os.path.isfile(edge):
-        proc = subprocess.Popen([edge] + app_flags)
-    elif chrome and os.path.isfile(chrome):
-        proc = subprocess.Popen([chrome] + app_flags)
-    else:
-        for cp in chrome_paths:
-            if os.path.isfile(cp):
-                proc = subprocess.Popen([cp] + app_flags)
-                break
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            proc = subprocess.Popen([cand] + app_flags, env=child_env)
+            _run_log.info(f'App-mode browser: {cand}')
+            break
+
+    # WebKitGTK floater — the Linux equivalent of Chromium's --app mode.
+    # Preferred over Firefox because Firefox dropped site-specific-browser
+    # support, so its window carries the full browser chrome and *that* chrome,
+    # not HRT's layout, sets the minimum window size. hrt_floater.py hosts the
+    # same URL in a bare WebView, which shrinks to the 200x450 this UI is drawn
+    # for. WebKitGTK is already installed as a Tauri dependency.
+    if proc is None and not IS_WIN:
+        floater = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "hrt_floater.py")
+        if os.path.isfile(floater) and _webkit_available():
+            # GDK_BACKEND=x11 routes the floater through XWayland.
+            #
+            # On Wayland this GTK window draws client-side decorations, and
+            # its invisible ~26px resize shadow offsets every click target in
+            # the titlebar -- the close button is drawn in one place and
+            # responds in another, so pressing the X does nothing. The same
+            # offset is documented on this box for other GTK CSD windows.
+            #
+            # Under XWayland the frame is server-side and the X lands where it
+            # is drawn. It also makes set_keep_above() work, which this floater
+            # asks for and Wayland silently ignores.
+            #
+            # XWayland is NOT Xorg. It is a rootless X server inside the
+            # Wayland session, already running here, and nothing about this
+            # starts or configures an Xorg session.
+            floater_env = dict(child_env)
+            if floater_env.get('WAYLAND_DISPLAY') and floater_env.get('DISPLAY'):
+                floater_env['GDK_BACKEND'] = 'x11'
+            proc = subprocess.Popen(
+                [sys.executable, floater, url,
+                 f"--width={width}", f"--height={height}"],
+                env=floater_env)
+            _run_log.info(f'WebKitGTK floater: {floater} ({width}x{height})')
+
+    # Firefox fallback, when WebKitGTK is unavailable. --new-window at least
+    # gives HRT its own window rather than a tab buried in an existing session.
+    if proc is None and not IS_WIN:
+        ff = shutil.which("firefox")
+        if ff:
+            proc = subprocess.Popen([ff, "--new-window", url], env=child_env)
+            _run_log.info(f'Firefox fallback: {ff} — no app-mode, so the window '
+                          f'cannot shrink to {width}x{height}')
 
     if proc is not None:
         _browser_proc = proc
@@ -228,21 +347,49 @@ def _already_running(host: str, port: int) -> bool:
         return False
 
 
+_lock_file = None  # POSIX: module-global so the flock is held for the process lifetime
+
+
+def _acquire_single_instance() -> bool:
+    """True if this process is the only HRT instance.
+
+    Windows uses a named kernel mutex. POSIX has no equivalent, so this takes a
+    non-blocking exclusive flock on a file in XDG_RUNTIME_DIR; the kernel drops
+    it when the process dies, including after a crash, where a PID file would
+    strand the app.
+    """
+    global _lock_file
+
+    if IS_WIN:
+        import ctypes
+        _MUTEX_NAME = "Global\\BaxtersAiHotRodTuner_SingleInstance"
+        ctypes.windll.kernel32.CreateMutexW(None, True, _MUTEX_NAME)
+        return ctypes.windll.kernel32.GetLastError() != 183  # ERROR_ALREADY_EXISTS
+
+    import fcntl
+    import tempfile as _tf
+    base = os.environ.get('XDG_RUNTIME_DIR') or _tf.gettempdir()
+    try:
+        fh = open(os.path.join(base, f'hot_rod_tuner_{os.getuid()}.lock'), 'w')
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    fh.write(str(os.getpid()))
+    fh.flush()
+    _lock_file = fh  # keep open; closing releases the lock
+    return True
+
+
 if __name__ == "__main__":
     import sys
-    import ctypes
 
-    # ── Single-instance enforcement via Windows named mutex ──────────
-    _MUTEX_NAME = "Global\\BaxtersAiHotRodTuner_SingleInstance"
-    _mutex_handle = ctypes.windll.kernel32.CreateMutexW(None, True, _MUTEX_NAME)
-    _last_error = ctypes.windll.kernel32.GetLastError()
-    _ERROR_ALREADY_EXISTS = 183
+    _is_first_instance = _acquire_single_instance()
 
     host = os.getenv("HOTROD_HOST", "127.0.0.1")
     port = int(os.getenv("HOTROD_PORT", "8090"))  # 8080 is reserved for LLM backend (GGUF Chatbox)
     url = f"http://{host}:{port}"
 
-    if _last_error == _ERROR_ALREADY_EXISTS:
+    if not _is_first_instance:
         # Another instance owns the mutex — just open a window to it
         print("HRT is already running — bringing window to front.")
         # Wait briefly for the server to become reachable (the other instance
@@ -256,8 +403,8 @@ if __name__ == "__main__":
 
     print("Starting Hot Rod Tuner...")
 
-    # Play startup sound immediately (background thread)
-    sound_manager.play_startup_sound(blocking=False)
+    # Startup sound now belongs to the server's startup event (see app.py) so it
+    # plays exactly once; playing it here as well produced two overlapping copies.
 
     # Start server in background
     threading.Thread(target=_run_server, args=(host, port), daemon=True).start()
@@ -270,14 +417,17 @@ if __name__ == "__main__":
     # Splash runs on main thread (tkinter requirement), blocks until done
     show_splash(_server_ready, _splash_done)
 
-    # Hide the console window now that startup is complete
-    try:
-        import ctypes
-        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-        if hwnd:
-            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
-    except Exception:
-        pass
+    # Hide the console window now that startup is complete.
+    # Windows-only: a POSIX terminal is owned by the shell, not the process,
+    # and there is no equivalent "hide my console" call.
+    if IS_WIN:
+        try:
+            import ctypes
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+        except Exception:
+            pass
 
     _run_log.info('Splash done, entering main keep-alive loop')
     _run_fh.flush()
@@ -288,10 +438,15 @@ if __name__ == "__main__":
     # "wrong thread" and fatally exits at the C level (~20s after startup).
     # With GC disabled, asyncio objects are freed by reference counting in
     # their own thread, which is thread-safe.
-    import gc
-    gc.disable()
-    _run_log.info('Cyclic GC disabled on main thread to prevent asyncio cross-thread __del__')
-    _run_fh.flush()
+    # Kept Windows-only: the crash it works around is the Windows asyncio
+    # proactor loop's cross-thread __del__ check. Leaving the collector off on
+    # Linux would trade a bug that does not occur here for an unbounded heap in
+    # a server that runs for days and holds cyclic asyncio/deque structures.
+    if IS_WIN:
+        import gc
+        gc.disable()
+        _run_log.info('Cyclic GC disabled on main thread to prevent asyncio cross-thread __del__')
+        _run_fh.flush()
 
     # Keep main thread alive for the server
     try:

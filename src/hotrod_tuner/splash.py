@@ -116,6 +116,37 @@ def show_splash(ready_event: Event, done_event: Event = None, banner_name: str =
 
     root.after(100, tick)
     root.mainloop()
+
+    # ── Finalize every Tk object on THIS thread, deterministically ───────────
+    #
+    # Without this the process aborts roughly 90 seconds after startup with
+    #   Tcl_AsyncDelete: async handler deleted by the wrong thread
+    # and a SIGABRT core dump.
+    #
+    # Why: the widgets, the PhotoImage (kept alive by `banner_lbl.image = img`)
+    # and the `tick` closure form reference cycles, so returning from this
+    # function does not free them — only the cyclic collector does. That
+    # collector runs on whichever thread happens to trigger it, and here that is
+    # a uvicorn or sensor-poller thread. Tk's deallocator refuses to run off the
+    # interpreter's own thread and calls Tcl_Panic, which aborts the process.
+    #
+    # Breaking the cycles and collecting here means nothing Tk-owned survives
+    # this function, so no background thread can ever finalize one. Preferred
+    # over disabling the GC process-wide, which would trade this crash for
+    # unbounded heap growth in a server that runs for days.
+    try:
+        root.destroy()          # no-op if tick() already destroyed it
+    except Exception:
+        pass
+    try:
+        banner_lbl.image = None
+    except Exception:
+        pass
+    del banner_lbl, prog_frame, status_lbl, bar_canvas, bar_fill
+    del img, tick, progress, ready_at, root
+    import gc
+    gc.collect()
+
     # Signal that splash is closed so the floater can open
     if done_event:
         done_event.set()
