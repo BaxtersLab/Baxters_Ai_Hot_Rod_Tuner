@@ -1,0 +1,33 @@
+#!/bin/sh
+# Offline, idempotent, fail-loud. No network. No pip. No "|| true" on anything
+# that matters -- per the packaging contract, a postinst that cannot succeed must
+# fail the install rather than report success (Article XIII.4).
+set -e
+
+case "$1" in
+  configure)
+    # /opt is not dpkg-owned on Ubuntu; create parents rather than claiming them.
+    mkdir -p /opt/baxters
+    # Group that the udev rule grants pwm write to. Idempotent.
+    if ! getent group baxtersfan >/dev/null; then
+        addgroup --system baxtersfan
+    fi
+
+    # Apply the rule to already-present hwmon devices without a reboot.
+    if [ -x /sbin/udevadm ] || [ -x /bin/udevadm ] || command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules
+        udevadm trigger --subsystem-match=hwmon
+    fi
+
+    if [ -x /usr/bin/update-desktop-database ]; then
+        update-desktop-database -q /usr/share/applications || true
+    fi
+
+    echo "baxters-hot-rod-tuner: installed."
+    echo "  Fan MONITORING works now."
+    echo "  Fan CONTROL additionally requires your user to be in the 'baxtersfan'"
+    echo "  group -- a package cannot do this for you safely:"
+    echo "      sudo usermod -aG baxtersfan \$USER    # then log out and back in"
+    ;;
+esac
+exit 0

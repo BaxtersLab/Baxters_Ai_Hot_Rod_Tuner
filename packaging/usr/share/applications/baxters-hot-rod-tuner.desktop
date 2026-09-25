@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Baxters Hot Rod Tuner
+Comment=GPU/CPU telemetry and fan control
+Exec=/opt/baxters/hot-rod-tuner/run.sh
+Icon=/opt/baxters/hot-rod-tuner/assets/HRT_ICON.png
+Terminal=false
+Categories=System;Monitor;
+StartupWMClass=hrt_floater.py

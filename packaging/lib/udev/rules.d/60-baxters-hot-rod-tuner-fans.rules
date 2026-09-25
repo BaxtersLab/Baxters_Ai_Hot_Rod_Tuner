@@ -1,0 +1,12 @@
+# Baxters Hot Rod Tuner — fan control permissions
+#
+# WHY THIS EXISTS: hwmon pwm nodes are root-owned, so fan CONTROL is
+# unavailable to a normal user while fan MONITORING works fine. Without this
+# rule fan_manager.py's Linux backend ("PATH C", hwmon) detects the nodes,
+# finds none writable, and returns 'none' — the app runs, reports sensors, and
+# silently cannot raise a fan.
+#
+# Grants group write on pwm attributes to the "baxtersfan" group only.
+# Read access is unchanged; nothing here grants root or weakens any other node.
+ACTION=="add|change", SUBSYSTEM=="hwmon", \
+  RUN+="/bin/sh -c '/usr/bin/chgrp baxtersfan /sys%p/pwm* 2>/dev/null || true; /usr/bin/chmod g+w /sys%p/pwm* 2>/dev/null || true'"

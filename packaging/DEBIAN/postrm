@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+case "$1" in
+  purge)
+    rm -f /lib/udev/rules.d/60-baxters-hot-rod-tuner-fans.rules
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules || true
+    fi
+    # The group is removed only on purge, and only if no member remains.
+    if getent group baxtersfan >/dev/null; then
+        if [ -z "$(getent group baxtersfan | cut -d: -f4)" ]; then
+            delgroup --system baxtersfan || true
+        fi
+    fi
+    rm -rf /opt/baxters/hot-rod-tuner
+    rmdir /opt/baxters 2>/dev/null || true
+    ;;
+esac
+exit 0

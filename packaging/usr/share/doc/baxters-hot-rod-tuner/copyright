@@ -1,0 +1,16 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: hot-rod-tuner
+Source: https://github.com/BaxtersLab/Baxters_Ai_Hot_Rod_Tuner
+
+Files: *
+Copyright: 2026 Baxters Lab
+License: Apache-2.0
+ Depends on python3-gi (LGPL-2.1+), which does not propagate its licence to this work.
+ .
+
+License: Apache-2.0
+ The full text of this licence is in /usr/share/common-licenses/Apache-2.0 on Debian and Ubuntu systems.
+ .
+ This package is open source. Third-party components it depends on are supplied
+ by the distribution and remain under their own licences; this package does not
+ bundle or redistribute them.
