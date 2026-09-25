@@ -69,18 +69,14 @@ if [[ "${XDG_DATA_DIRS:-}" == *"/snap/"* ]]; then
     unset _clean _parts _p
 fi
 
-# An existing venv is used when present (the dev tree has one). Otherwise the
-# system python3 is used and NO venv is created.
-#
-# This used to build a venv and pip-install unconditionally. Installed at
-# /opt/baxters/hot-rod-tuner that directory is ROOT-OWNED, so an ordinary
-# user's first launch died creating .venv and the app never started -- found by
-# a clean-VM install on 2026-09-25. It also reached the network at start-up,
-# which A1 s7.1 forbids. Every dependency is declared in the package.
 VENV=".venv"
 PY="$VENV/bin/python"
+
 if [[ ! -x "$PY" ]]; then
-    PY="python3"
+    echo "[HRT] Creating virtualenv…"
+    python3 -m venv --system-site-packages "$VENV"
+    "$PY" -m pip install --quiet --upgrade pip
+    "$PY" -m pip install --quiet -r requirements.txt
 fi
 
 # requirements.txt marks wmi as win32-only, so this stays a no-op reinstall here.
