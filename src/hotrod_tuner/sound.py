@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import Optional
 
+from .paths import sounds_dir as _user_sounds_dir
+
 # Use winsound on Windows (built-in, works in frozen exe).
 #
 # On Linux, prefer a command-line player over `playsound`: playsound 1.3 has no
@@ -38,6 +40,8 @@ class SoundManager:
     """Manages playback of WAV sound files for Hot Rod Tuner."""
 
     def __init__(self, sound_dir: Optional[str] = None):
+        # An explicit folder is the only folder searched.
+        self._explicit = sound_dir is not None
         if sound_dir is not None:
             self.sound_dir = Path(sound_dir)
         else:
@@ -55,6 +59,25 @@ class SoundManager:
                 self.sound_dir = base / "assets"
         self._current_thread: Optional[threading.Thread] = None
 
+    def sound_dirs(self) -> list[Path]:
+        """Folders searched for a .wav, in order; the first file found plays.
+
+        Off Windows the bundled assets folder is root-owned under /opt, so the
+        user's sounds folder comes first and a .wav dropped there replaces the
+        chime. It is resolved per call, so HOTROD_STATE_DIR always applies.
+        Windows keeps its single folder, which the user can already write.
+        """
+        if self._explicit or sys.platform == "win32":
+            return [self.sound_dir]
+        return [_user_sounds_dir(), self.sound_dir]
+
+    def _wav_files(self) -> list[Path]:
+        found: list[Path] = []
+        for folder in self.sound_dirs():
+            if folder.is_dir():
+                found += sorted(folder.glob("*.wav"))
+        return found
+
     def play_startup_sound(self, blocking: bool = False) -> bool:
         """
         Play the first available WAV file from the sound directory.
@@ -64,9 +87,9 @@ class SoundManager:
             print("Sound playback not available - no sound backend")
             return False
 
-        wav_files = list(self.sound_dir.glob("*.wav"))
+        wav_files = self._wav_files()
         if not wav_files:
-            print(f"No WAV files found in {self.sound_dir}")
+            print(f"No WAV files found in {', '.join(map(str, self.sound_dirs()))}")
             return False
 
         # Play the first WAV file found
@@ -106,10 +129,7 @@ class SoundManager:
 
     def get_available_sounds(self) -> list[str]:
         """Get list of available WAV files."""
-        if not self.sound_dir.exists():
-            return []
-
-        return [f.name for f in self.sound_dir.glob("*.wav")]
+        return [f.name for f in self._wav_files()]
 
     def stop_current_sound(self):
         """Stop currently playing sound (if supported by playsound)."""

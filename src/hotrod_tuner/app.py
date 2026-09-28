@@ -573,33 +573,45 @@ def get_available_sounds():
     return {"sounds": sound_manager.get_available_sounds()}
 
 
+def _sound_folder() -> Path:
+    """The folder the Sound Folder button opens: where a .wav replaces the chime.
+
+    Windows keeps its original folder: next to the exe when frozen (_ASSETS_DIR
+    is then the temp extraction folder), else the project's assets. Everywhere
+    else the payload is root-owned under /opt, so the button opens the user's
+    sounds folder, which SoundManager reads first.
+    """
+    if _sys.platform == "win32":
+        if getattr(_sys, 'frozen', False):
+            return Path(_sys.executable).parent / "assets"
+        return _ASSETS_DIR
+    return sound_manager.sound_dirs()[0]
+
+
 @app.get("/api/sound-folder")
 def get_sound_folder():
-    """Return the path to the assets/sounds folder."""
-    return {"path": str(_ASSETS_DIR)}
+    """Return the folder the Sound Folder button opens."""
+    return {"path": str(_sound_folder())}
 
 
 @app.post("/api/sound-folder/open")
 def open_sound_folder():
-    """Open the assets folder in the system file explorer.
-    
-    When running from the PyInstaller exe, _ASSETS_DIR points to the
-    temp extraction folder.  Instead, open the *real* assets folder
-    next to the exe (or next to the project root when running from source).
+    """Open the sound folder in the system file manager.
+
+    `explorer` exists only on Windows; the Linux desktop's opener is xdg-open.
+    The folder is created first, so a fresh install opens an empty folder
+    rather than an error.
     """
-    import subprocess, sys as _s
-    if getattr(_s, 'frozen', False):
-        # Frozen exe: assets sits next to the exe
-        folder = str(Path(_s.executable).parent / "assets")
-    else:
-        folder = str(_ASSETS_DIR)
-    # Create the folder if it doesn't exist yet so explorer doesn't error
-    Path(folder).mkdir(parents=True, exist_ok=True)
+    import subprocess
+    folder = _sound_folder()
+    opener = "explorer" if _sys.platform == "win32" else "xdg-open"
     try:
-        subprocess.Popen(["explorer", folder])
-        return {"ok": True, "path": folder}
+        folder.mkdir(parents=True, exist_ok=True)
+        subprocess.Popen([opener, str(folder)])
+        return {"ok": True, "path": str(folder)}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": f"could not open {folder} with {opener}: {e}",
+                "path": str(folder)}
 
 
 # ── Link: external app registration ─────────────────────────────────────

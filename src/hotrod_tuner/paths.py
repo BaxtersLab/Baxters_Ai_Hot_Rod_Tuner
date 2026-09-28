@@ -37,3 +37,12 @@ def data_dir() -> Path:
 
 def audit_dir() -> Path:
     return state_dir() / "audit"
+
+
+def sounds_dir() -> Path:
+    """Where the user drops a .wav to replace the startup chime.
+
+    The bundled assets folder is root-owned once installed, so the Sound Folder
+    button opens this one, and SoundManager reads it before the bundled chime.
+    """
+    return state_dir() / "sounds"
