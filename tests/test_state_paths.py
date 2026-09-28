@@ -70,3 +70,25 @@ def test_run_server_is_shipped_by_the_packager():
         assert target in payload, (
             f"run.sh execs {target} but build_deb.sh's payload list is {payload}"
         )
+
+
+def test_every_folder_the_server_serves_is_shipped_by_the_packager():
+    """static/ was never in the payload list, so every installed copy opened a
+    window reading {"error": "GUI not found ..."} instead of the tuner. Found by
+    the owner review's clean-VM install on 2026-09-28.
+    """
+    app_src = (SRC / "hotrod_tuner" / "app.py").read_text(encoding="utf-8")
+    served = set(re.findall(r'_BASE_DIR / "(\w+)"', app_src))
+    # Control: if app.py stops naming its folders this way, the check below
+    # would pass on an empty set. Fail instead.
+    assert {"static", "assets"} <= served, f"app.py's served folders changed shape: {served}"
+    build = (ROOT / "build_deb.sh").read_text(encoding="utf-8")
+    m = re.search(r"^for item in (.+?); do$", build, re.M)
+    assert m, "build_deb.sh has no recognisable payload list"
+    payload = m.group(1).split()
+    for name in sorted(served):
+        assert (ROOT / name).is_dir(), f"app.py serves {name}/, which is not in the tree"
+        assert name in payload, (
+            f"app.py serves {name}/ but build_deb.sh's payload list is {payload}"
+        )
+    assert (ROOT / "static" / "index.html").is_file()

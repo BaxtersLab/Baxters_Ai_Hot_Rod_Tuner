@@ -19,7 +19,7 @@ cp -a packaging/usr/share/applications/. "$STAGE/usr/share/applications/"
 cp -a packaging/lib/udev/rules.d/. "$STAGE/lib/udev/rules.d/"
 
 # Payload: source only. No build artifacts, no logs, no Windows launchers.
-for item in src run.sh requirements.txt pyproject.toml assets hrt_floater.py run_server.py; do
+for item in src run.sh requirements.txt pyproject.toml assets static hrt_floater.py run_server.py; do
     cp -a "$item" "$DEST/"
 done
 find "$DEST" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
@@ -41,6 +41,12 @@ while read -r entry; do
     fi
 done < <(grep -oE 'exec "\$PY" [A-Za-z0-9_./-]+\.py' run.sh | awk '{print $3}' | sort -u)
 [ "$missing_entry" -eq 0 ] || exit 1
+
+# Fail loudly if the GUI page is not in the payload. static/ was never in the
+# list above, so every installed copy through 1.0.2 served only
+# {"error": "GUI not found ..."} in place of the tuner. Found by the owner
+# review's clean-VM install, 2026-09-28.
+[ -f "$DEST/static/index.html" ] || { echo "FATAL: static/index.html is not in the payload" >&2; exit 1; }
 
 # Fail loudly if the .desktop points at an icon that is not in the payload.
 ICON=$(sed -n 's|^Icon=/opt/baxters/hot-rod-tuner/||p' "$STAGE/usr/share/applications/$PKG.desktop")
