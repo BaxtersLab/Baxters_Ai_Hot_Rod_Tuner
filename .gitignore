@@ -40,3 +40,6 @@ examples/
 saddle/
 HRT instruction blocks/
 HANDOFF_SESSION_*.txt
+
+# Cross-project handoff notes stay on this box (supervisor ruling HRT-Q1, 2026-09-28).
+/handoffs.md
