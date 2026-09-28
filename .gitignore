@@ -37,7 +37,6 @@ HRT_launch.bat
 DESIGN.md
 generate_pdfs.py
 examples/
-tests/
 saddle/
 HRT instruction blocks/
 HANDOFF_SESSION_*.txt
