@@ -20,7 +20,16 @@ from hotrod_tuner import __version__
 
 
 def test_version():
-    assert __version__ == "0.0.1"
+    """pyproject, __version__ and the .deb's control name one version. They
+    had drifted apart: 0.1.0, 0.0.1 and 1.0.3."""
+    import re
+    import tomllib
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    control = re.search(r"^Version: (\S+)$",
+                        (root / "packaging" / "DEBIAN" / "control").read_text(encoding="utf-8"), re.M)
+    assert control, "no Version: line in the control file"
+    assert __version__ == project == control.group(1), (__version__, project, control.group(1))
 
 
 def test_sound_manager(tmp_path, monkeypatch):
