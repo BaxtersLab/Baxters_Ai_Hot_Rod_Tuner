@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pathlib import Path
 import asyncio
 import psutil
@@ -235,7 +235,15 @@ def serve_gui():
     index = _STATIC_DIR / "index.html"
     if index.is_file():
         return FileResponse(str(index))
-    return {"error": "GUI not found — place index.html in static/"}
+    # A server error, not a 200: every installed copy through 1.0.2 lacked
+    # static/ and answered this with HTTP 200, so nothing that checked the
+    # status could tell. Plain ASCII, because the floater showed the JSON
+    # version's em dash as mojibake.
+    return PlainTextResponse(
+        "Hot Rod Tuner cannot show its window: the interface file "
+        f"static/index.html is missing from {_BASE_DIR}. Reinstall the package.",
+        status_code=500,
+    )
 
 
 # ── WebSocket: live sensor stream ────────────────────────────────────

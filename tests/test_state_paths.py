@@ -92,3 +92,45 @@ def test_every_folder_the_server_serves_is_shipped_by_the_packager():
             f"app.py serves {name}/ but build_deb.sh's payload list is {payload}"
         )
     assert (ROOT / "static" / "index.html").is_file()
+
+
+_GUI_CHILD = r"""
+import json, sys
+try:
+    sys.path.insert(0, sys.argv[1])
+    from pathlib import Path
+    from hotrod_tuner import app as hrt_app
+    if sys.argv[2] != "real":
+        hrt_app._STATIC_DIR = Path(sys.argv[2])
+    r = hrt_app.serve_gui()
+    body = getattr(r, "body", b"")
+    print(json.dumps({"status": r.status_code, "type": r.media_type,
+                      "body": body.decode("utf-8", "replace"),
+                      "path": str(getattr(r, "path", ""))}))
+except Exception as e:
+    print(json.dumps({"child_error": type(e).__name__}))
+    sys.exit(1)
+"""
+
+
+def _serve_gui(tmp_path, static):
+    env = dict(os.environ, HOTROD_STATE_DIR=str(tmp_path / "state"))
+    out = subprocess.run([sys.executable, "-c", _GUI_CHILD, str(SRC), static],
+                         env=env, capture_output=True, text=True, timeout=60)
+    lines = [l for l in out.stdout.splitlines() if l.startswith("{")]
+    assert lines, f"child printed no result (exit {out.returncode})"
+    import json
+    got = json.loads(lines[-1])
+    assert "child_error" not in got, f"child raised {got['child_error']}"
+    return got
+
+
+def test_a_missing_gui_is_a_server_error_with_a_plain_message(tmp_path):
+    got = _serve_gui(tmp_path, str(tmp_path / "no-static"))
+    assert got["status"] == 500, got
+    assert got["type"] == "text/plain", got
+    assert "static/index.html is missing" in got["body"], got
+    assert got["body"].isascii(), "the floater showed the old em dash as mojibake"
+    # Control: with the real static/ the page itself is served.
+    real = _serve_gui(tmp_path, "real")
+    assert real["status"] == 200 and real["path"].endswith("static/index.html"), real
