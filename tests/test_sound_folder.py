@@ -105,10 +105,8 @@ def test_a_wav_in_the_user_folder_replaces_the_bundled_sound(tmp_path, monkeypat
     assert "hrt sound.wav" in names, "the bundled chime must still be listed"
 
     # The file the player receives is the one the UI label shows (names[0]).
-    from hotrod_tuner import sound
     played = []
-    monkeypatch.setattr(sound, "SOUND_BACKEND", "command")
-    monkeypatch.setattr(m, "_play_sound", lambda f: played.append(f) or True)
+    m._player = lambda f: played.append(f) or True
     assert m.play_startup_sound(blocking=True) is True
     assert played == [str(user / "mine.wav")], played
 
@@ -141,3 +139,72 @@ def test_windows_manager_still_reads_only_the_bundled_folder(tmp_path, monkeypat
     (user / "mine.wav").write_bytes(b"RIFF")
     monkeypatch.setattr(sys, "platform", "win32")
     assert m.get_available_sounds() == ["hrt sound.wav"]
+
+
+def _recording_manager(monkeypatch, state: Path, **kw):
+    monkeypatch.setenv("HOTROD_STATE_DIR", str(state))
+    sys.path.insert(0, str(SRC))
+    from hotrod_tuner.sound import SoundManager
+    played = []
+    return SoundManager(player=lambda f: played.append(f) or True, **kw), played
+
+
+def test_the_user_folder_plays_before_the_bundled_chime(tmp_path, monkeypatch):
+    m, played = _recording_manager(monkeypatch, tmp_path / "state")
+    user = tmp_path / "state" / "sounds"
+    assert m.play_startup_sound(blocking=True)          # no user folder yet
+    user.mkdir(parents=True)
+    (user / "mine.wav").write_bytes(b"RIFF")
+    assert m.play_startup_sound(blocking=True)          # the user's sound
+    (user / "mine.wav").unlink()
+    assert m.play_startup_sound(blocking=True)          # back to the chime
+    assert [Path(f).name for f in played] == ["hrt sound.wav", "mine.wav", "hrt sound.wav"]
+    assert Path(played[1]).parent == user
+
+
+def test_a_missing_sound_file_is_reported_and_never_played(tmp_path, monkeypatch, capsys):
+    m, played = _recording_manager(monkeypatch, tmp_path / "state")
+    user = tmp_path / "state" / "sounds"
+    user.mkdir(parents=True)
+    gone = user / "a.wav"                               # sorts first
+    gone.symlink_to(tmp_path / "deleted.wav")           # a dangling link
+    (user / "mine.wav").write_bytes(b"RIFF")
+    assert m.get_available_sounds()[0] == "a.wav", "premise: the missing file is chosen"
+    assert m.play_startup_sound(blocking=True) is False
+    assert played == []
+    assert f"Sound file missing: {gone}" in capsys.readouterr().out
+
+
+def test_no_sound_anywhere_names_the_folders_searched(tmp_path, monkeypatch, capsys):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    m, played = _recording_manager(monkeypatch, tmp_path / "state", sound_dir=str(empty))
+    assert m.play_startup_sound(blocking=True) is False
+    assert played == []
+    assert f"No WAV files found in {empty}" in capsys.readouterr().out
+
+
+def test_a_player_that_fails_is_reported_as_a_failure(tmp_path, monkeypatch):
+    """The default player: the command's exit status decides. `false` and
+    `true` stand in for pw-play, so nothing reaches the speakers."""
+    import shutil
+    monkeypatch.setenv("HOTROD_STATE_DIR", str(tmp_path / "state"))
+    sys.path.insert(0, str(SRC))
+    from hotrod_tuner import sound
+    monkeypatch.setattr(sound, "SOUND_BACKEND", "command")
+    monkeypatch.setattr(sound, "_LINUX_PLAYER", shutil.which("false"))
+    assert sound.SoundManager().play_startup_sound(blocking=True) is False
+    # Control: a player that succeeds is reported as success.
+    monkeypatch.setattr(sound, "_LINUX_PLAYER", shutil.which("true"))
+    assert sound.SoundManager().play_startup_sound(blocking=True) is True
+
+
+
+def test_an_injected_player_needs_no_detected_backend(tmp_path, monkeypatch):
+    m, played = _recording_manager(monkeypatch, tmp_path / "state")
+    from hotrod_tuner import sound
+    monkeypatch.setattr(sound, "SOUND_BACKEND", None)
+    assert m.play_startup_sound(blocking=True) is True
+    assert [Path(f).name for f in played] == ["hrt sound.wav"]
+    # Control: with no player and no backend, nothing plays.
+    assert sound.SoundManager().play_startup_sound(blocking=True) is False

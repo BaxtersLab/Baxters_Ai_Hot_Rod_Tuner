@@ -16,23 +16,26 @@ import pytest
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from hotrod_tuner import __version__, sound_manager
+from hotrod_tuner import __version__
 
 
 def test_version():
     assert __version__ == "0.0.1"
 
 
-def test_sound_manager():
-    """Test sound manager functionality."""
-    # Test getting available sounds (may be empty if no files present)
-    sounds = sound_manager.get_available_sounds()
-    assert isinstance(sounds, list)
-
-    # Test sound playback (should not raise exceptions)
-    result = sound_manager.play_startup_sound(blocking=True)
-    # Result may be False if no sound files exist, which is OK
-    assert isinstance(result, bool)
+def test_sound_manager(tmp_path, monkeypatch):
+    """The startup chime is the bundled one when the user has none, and it is
+    handed to the player, not to the speakers. The old version of this test
+    played the real chime on every gate run and asserted only that the
+    result was a bool."""
+    monkeypatch.setenv("HOTROD_STATE_DIR", str(tmp_path / "state"))
+    from hotrod_tuner.sound import SoundManager
+    played = []
+    m = SoundManager(player=lambda f: played.append(f) or True)
+    assert m.get_available_sounds() == ["hrt sound.wav"]
+    assert m.play_startup_sound(blocking=True) is True
+    assert [Path(f).name for f in played] == ["hrt sound.wav"]
+    assert Path(played[0]).parent.name == "assets"
 
 
 def test_metrics_store():

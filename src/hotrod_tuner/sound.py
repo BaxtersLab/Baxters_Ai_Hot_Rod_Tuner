@@ -5,7 +5,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .paths import sounds_dir as _user_sounds_dir
 
@@ -36,10 +36,43 @@ except ImportError:
             print("Warning: no sound backend available. Sound functionality will be disabled.")
 
 
+def _play_with_backend(sound_file: str) -> bool:
+    """Play one file with the detected backend, blocking. True only if it played."""
+    try:
+        if SOUND_BACKEND == "winsound":
+            winsound.PlaySound(sound_file, winsound.SND_FILENAME)
+        elif SOUND_BACKEND == "command":
+            argv = [_LINUX_PLAYER]
+            if _LINUX_PLAYER.endswith("ffplay"):
+                argv += ["-nodisp", "-autoexit", "-loglevel", "quiet"]
+            # Capped wait: a startup chime is ~2s, and a player left blocked
+            # on a dead audio server must not pin this thread forever.
+            done = subprocess.run(argv + [sound_file], timeout=30,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # The exit status was ignored, so a player that could not play
+            # the file still reported success.
+            if done.returncode != 0:
+                print(f"Error playing sound: {Path(_LINUX_PLAYER).name} exited "
+                      f"{done.returncode} for {sound_file}")
+                return False
+        elif SOUND_BACKEND == "playsound":
+            playsound(sound_file)
+        else:
+            return False
+        return True
+    except Exception as e:
+        print(f"Error playing sound: {e}")
+        return False
+
+
 class SoundManager:
     """Manages playback of WAV sound files for Hot Rod Tuner."""
 
-    def __init__(self, sound_dir: Optional[str] = None):
+    def __init__(self, sound_dir: Optional[str] = None,
+                 player: Optional[Callable[[str], bool]] = None):
+        # Plays one file, blocking, and says whether it played. Injectable so
+        # the test suite never drives the speakers.
+        self._player = player
         # An explicit folder is the only folder searched.
         self._explicit = sound_dir is not None
         if sound_dir is not None:
@@ -83,7 +116,7 @@ class SoundManager:
         Play the first available WAV file from the sound directory.
         Returns True if a sound was played, False otherwise.
         """
-        if SOUND_BACKEND is None:
+        if self._player is None and SOUND_BACKEND is None:
             print("Sound playback not available - no sound backend")
             return False
 
@@ -108,24 +141,12 @@ class SoundManager:
             return True
 
     def _play_sound(self, sound_file: str) -> bool:
-        """Play a sound file using the available backend."""
-        try:
-            if SOUND_BACKEND == "winsound":
-                winsound.PlaySound(sound_file, winsound.SND_FILENAME)
-            elif SOUND_BACKEND == "command":
-                argv = [_LINUX_PLAYER]
-                if _LINUX_PLAYER.endswith("ffplay"):
-                    argv += ["-nodisp", "-autoexit", "-loglevel", "quiet"]
-                # Capped wait: a startup chime is ~2s, and a player left blocked
-                # on a dead audio server must not pin this thread forever.
-                subprocess.run(argv + [sound_file], timeout=30,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            elif SOUND_BACKEND == "playsound":
-                playsound(sound_file)
-            return True
-        except Exception as e:
-            print(f"Error playing sound: {e}")
+        """Play one file with this manager's player. A file that is not there
+        (removed, or a dangling link) is reported and never handed over."""
+        if not Path(sound_file).is_file():
+            print(f"Sound file missing: {sound_file}")
             return False
+        return (self._player or _play_with_backend)(sound_file)
 
     def get_available_sounds(self) -> list[str]:
         """Get list of available WAV files."""
