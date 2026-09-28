@@ -2,6 +2,78 @@
 
 _Append-only. Newest entry at the top._
 
+## [2026-09-28] — Owner review: the suite committed, the Linux Sound Folder, and the GUI shipped at last (1.0.3)
+
+Five commits on `linux`, not pushed. The fresh-clone gate agrees at each one
+(listed = JUnit XML = passed): `88f98af` 25, `78a8795` 27, `f50eb28` 33,
+`d9ea7b9` 34. The working tree is also 34.
+
+### What changed
+
+- **`f2e3845`**: state goes under XDG (`src/hotrod_tuner/paths.py`:
+  `HOTROD_STATE_DIR` > `$XDG_DATA_HOME/hot-rod-tuner` >
+  `~/.local/share/hot-rod-tuner`). `run_server.py` is packaged, and the .deb is
+  named from its control (1.0.2).
+- **`88f98af`**: `.gitignore` no longer hides `tests/`, so the suite is in git.
+  A clean clone had 0 tests before this.
+- **`78a8795`**: two fan tests that mutation showed were missing:
+  - the RPM backstop, exercised through `_apply_pct_linux`;
+  - the baseline keeping the busiest firmware state.
+- **`f50eb28`**: the Sound Folder button ran `explorer`, which exists only on
+  Windows, so it failed on every Linux install. Off Windows it now opens
+  `<state dir>/sounds` with `xdg-open` and creates the folder on first use.
+  SoundManager reads that folder before the bundled chime. Windows is
+  unchanged.
+- **`d9ea7b9`**: `static/` had never been in `build_deb.sh`'s payload list.
+  Every installed copy through 1.0.2 opened a window reading
+  `{"error": "GUI not found ..."}` instead of the tuner. The packager now ships
+  it and refuses to build without `static/index.html`. Version 1.0.3.
+
+### Verified
+
+- **Clean VM**, from the harness's lean baseline (HRT 1.0.2 installed):
+  - on 1.0.2, the window showed only the error JSON, and `POST
+    /api/sound-folder/open` returned `No such file or directory: 'explorer'`;
+  - after upgrading to 1.0.3 the full GUI renders, and Sound Folder opens an
+    empty `~/.local/share/hot-rod-tuner/sounds` in Files;
+  - a `.wav` dropped there is listed first, plays on demand and at the next
+    startup, and shows in the Sound label.
+- **Mutation**, 29 mutants, all killed:
+  - fans: 15 (2 survived until `78a8795` added the tests above);
+  - state paths: 3;
+  - sound folder: 11.
+- **Packaging guard**: a copy with `static` dropped from the list exits 1 with
+  `FATAL: static/index.html is not in the payload`. The unmutated copy builds.
+
+### Fan safety: run the suite with /sys read-only
+
+The installed udev rule (`60-baxters-hot-rod-tuner-fans.rules`) makes the
+real `pwm*` and `pwm*_enable` nodes writable by the desktop user, with no sudo.
+Any code path that does not redirect `fan_manager._HWMON_ROOT` can drive the
+real fans. That includes a test that forgets the fixture, a mutant, or
+importing `app.py`. So run every test and mutant like this:
+
+    bwrap --dev-bind / / --ro-bind /sys /sys .venv/bin/python -m pytest -q tests
+
+Check first that `os.access('/sys/class/hwmon/hwmon0/pwm1_enable', os.W_OK)`
+is False inside the sandbox. Throughout this review, `pwm*_enable` read 2
+(BIOS auto) before and after every run.
+
+### Found, not changed
+
+- Two backup files are tracked in the repo:
+  `build_deb.sh.pre-hygiene-2026-09-24.bak` and
+  `run.sh.pre-venv-fix-2026-09-25.bak`.
+- `tests/test_policy.py::test_sound_manager` plays the real chime through the
+  speakers on every gate run, and asserts only that the result is a bool.
+- The floater is kept above other windows by design, so a maximized HRT hides
+  the Files window the button opens. At normal floater size, Files is visible
+  around it.
+- The "GUI not found" reply is HTTP 200, and its em dash renders as mojibake
+  in the floater. It is unreachable now that `static/` ships.
+- Three version strings disagree: `pyproject.toml` says 0.1.0, `__version__`
+  says 0.0.1, and the .deb is 1.0.3.
+
 ## [2026-08-05] — White titlebar fixed: snap schema shadowing made GTK fall back to Adwaita
 
 Operator: *"the title bar should be gray not white."*
