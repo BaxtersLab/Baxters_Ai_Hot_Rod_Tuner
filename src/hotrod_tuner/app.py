@@ -23,7 +23,8 @@ app = FastAPI(title="Baxters Hot Rod Tuner")
 
 # ── Crash-resilient file logging ─────────────────────────────────────
 import logging as _logging
-_CRASH_LOG = Path('data') / 'hrt_server.log'
+from .paths import audit_dir as _audit_dir, data_dir as _data_dir
+_CRASH_LOG = _data_dir() / 'hrt_server.log'
 _CRASH_LOG.parent.mkdir(parents=True, exist_ok=True)
 _file_handler = _logging.FileHandler(str(_CRASH_LOG), mode='a', encoding='utf-8')
 _file_handler.setFormatter(_logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
@@ -81,7 +82,7 @@ fan_manager = FanManager()
 
 # Linked external apps: list of {app_name, exe_path, pid}
 _linked_apps: list = []
-_LINKED_FILE = Path('data') / 'linked_apps.json'
+_LINKED_FILE = _data_dir() / 'linked_apps.json'
 
 def _save_linked():
     """Persist linked apps list to disk."""
@@ -312,7 +313,7 @@ def api_fans_optimize(payload: FanOptimizePayload):
             'enable_write': state.get('enable_write'),
             'capability': 'fan.optimize'
         }
-        write_audit_event(Path('audit') / 'fan_manager.jsonl', audit_event)
+        write_audit_event(_audit_dir() / 'fan_manager.jsonl', audit_event)
         return state
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -414,7 +415,7 @@ def telemetry(payload: TelemetryPayload):
             'sensor_count': len(payload.sensors),
             'capability': 'governor.telemetry'
         }
-        write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+        write_audit_event(_audit_dir() / 'hotrod_audit.jsonl', audit_event)
 
         return {"ok": True, "received": True, "host": payload.host}
     except Exception as e:
@@ -443,7 +444,7 @@ def preflight(job: JobDescriptor):
         'reason': decision.get('reason', ''),
         'capability': 'governor.preflight'
     }
-    write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+    write_audit_event(_audit_dir() / 'hotrod_audit.jsonl', audit_event)
 
     return decision
 
@@ -462,7 +463,7 @@ def schedule_job(job: JobDescriptor):
         'resource_intensity': job.resource_intensity,
         'capability': 'scheduler.submit'
     }
-    write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+    write_audit_event(_audit_dir() / 'hotrod_audit.jsonl', audit_event)
 
     return {"ok": True, "job_id": job_id, "status": "queued"}
 
@@ -481,7 +482,7 @@ def approve_job(job_id: str):
         'job_id': job_id,
         'capability': 'scheduler.approve'
     }
-    write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+    write_audit_event(_audit_dir() / 'hotrod_audit.jsonl', audit_event)
 
     return {"ok": True, "job_id": job_id, "status": "approved"}
 
@@ -500,7 +501,7 @@ def start_job(job_id: str):
         'job_id': job_id,
         'capability': 'scheduler.start'
     }
-    write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+    write_audit_event(_audit_dir() / 'hotrod_audit.jsonl', audit_event)
 
     return {"ok": True, "job_id": job_id, "status": "running"}
 
@@ -518,7 +519,7 @@ def complete_job(job_id: str, result: Optional[Dict[str, Any]] = None):
         'job_id': job_id,
         'capability': 'scheduler.complete'
     }
-    write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+    write_audit_event(_audit_dir() / 'hotrod_audit.jsonl', audit_event)
 
     return {"ok": True, "job_id": job_id, "status": "completed"}
 
@@ -561,7 +562,7 @@ def play_sound():
         'available_sounds': sound_manager.get_available_sounds(),
         'capability': 'sound.play'
     }
-    write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+    write_audit_event(_audit_dir() / 'hotrod_audit.jsonl', audit_event)
 
     return {"ok": success, "available_sounds": sound_manager.get_available_sounds()}
 
@@ -761,7 +762,7 @@ def server_estop(payload: EstopPayload = EstopPayload()):
             'linked_apps_count': len(_linked_apps),
             'results': results,
         }
-        write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+        write_audit_event(_audit_dir() / 'hotrod_audit.jsonl', audit_event)
 
         return {"ok": True, "killed_count": len(killed_pids), "results": results, "killed_names": sorted(killed_names)}
     except Exception as e:
@@ -880,7 +881,7 @@ def kill_process(payload: KillPayload):
         'capability': 'governor.kill',
         'details': {'payload': {'path': payload.path, 'dry_run': payload.dry_run}, 'result': result},
     }
-    write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+    write_audit_event(_audit_dir() / 'hotrod_audit.jsonl', audit_event)
 
     return result
 
@@ -933,7 +934,7 @@ def _audit_kill_pid(payload, result):
         'pid': payload.pid,
         'result': result,
     }
-    write_audit_event(Path('audit') / 'hotrod_audit.jsonl', audit_event)
+    write_audit_event(_audit_dir() / 'hotrod_audit.jsonl', audit_event)
 
 
 def now_utc_iso():

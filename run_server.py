@@ -12,7 +12,10 @@ from hotrod_tuner.sound import sound_manager
 from hotrod_tuner.splash import show_splash
 
 # ── File-based crash logger (independent of app.py's logger) ─────────
-_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0] if hasattr(sys, 'argv') and sys.argv else __file__)), 'data')
+# NOT beside this file: installed, that directory is /opt/baxters/hot-rod-tuner
+# and is root-owned, so makedirs() raised PermissionError before the app started.
+from hotrod_tuner.paths import data_dir as _data_dir
+_LOG_DIR = str(_data_dir())
 os.makedirs(_LOG_DIR, exist_ok=True)
 _run_log = logging.getLogger('hrt_run')
 _run_log.setLevel(logging.DEBUG)

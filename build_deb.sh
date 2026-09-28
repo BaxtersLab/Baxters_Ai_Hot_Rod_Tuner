@@ -19,12 +19,28 @@ cp -a packaging/usr/share/applications/. "$STAGE/usr/share/applications/"
 cp -a packaging/lib/udev/rules.d/. "$STAGE/lib/udev/rules.d/"
 
 # Payload: source only. No build artifacts, no logs, no Windows launchers.
-for item in src run.sh requirements.txt pyproject.toml assets hrt_floater.py; do
+for item in src run.sh requirements.txt pyproject.toml assets hrt_floater.py run_server.py; do
     cp -a "$item" "$DEST/"
 done
 find "$DEST" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
 find "$DEST" -name '*.pyc' -delete 2>/dev/null || true
 chmod 0755 "$DEST/run.sh"
+
+# Fail loudly if run.sh execs a payload file that was never packaged. The icon
+# check below has existed for a while; nothing checked the ENTRY POINT, so
+# run_server.py -- the file the default branch execs -- was missing from this
+# list and every launch from the .desktop died instantly with
+# "can't open file '/opt/baxters/hot-rod-tuner/run_server.py'".
+# Found by launch-smoke.sh on a clean VM install, 2026-09-25.
+missing_entry=0
+while read -r entry; do
+    [ -n "$entry" ] || continue
+    if [ ! -e "$DEST/$entry" ]; then
+        echo "FATAL: run.sh execs '$entry' which is not in the payload" >&2
+        missing_entry=1
+    fi
+done < <(grep -oE 'exec "\$PY" [A-Za-z0-9_./-]+\.py' run.sh | awk '{print $3}' | sort -u)
+[ "$missing_entry" -eq 0 ] || exit 1
 
 # Fail loudly if the .desktop points at an icon that is not in the payload.
 ICON=$(sed -n 's|^Icon=/opt/baxters/hot-rod-tuner/||p' "$STAGE/usr/share/applications/$PKG.desktop")
@@ -59,5 +75,13 @@ if [ -n "$(find "$STAGE" \( -type f -o -type d \) -perm -g+w -print -quit 2>/dev
     echo "FATAL: group-writable entries remain in the payload" >&2
     exit 1
 fi
-dpkg-deb --root-owner-group --build "$STAGE" "$OUT/${PKG}_1.0.0_all.deb" >/dev/null
-echo "built: $OUT/${PKG}_1.0.0_all.deb"
+# The output filename is derived from the control file, the single source of
+# truth. It was hardcoded "1.0.0", so bumping the control produced a package
+# whose CONTROL said 1.0.1 and whose FILENAME said 1.0.0 -- apt reads the
+# control, but every tool that globs the pool reads the name, and the two
+# disagreeing is how "two different files claim the same version" starts.
+# Found while building the A10 upgrade train, 2026-09-25.
+DEBVER="$(awk '/^Version: /{sub(/^Version: /,""); print; exit}' "$(dirname "$(readlink -f "$0")")"/packaging/DEBIAN/control)"
+[ -n "$DEBVER" ] || { echo "FATAL: no Version: in the control file" >&2; exit 1; }
+dpkg-deb --root-owner-group --build "$STAGE" "$OUT/${PKG}_${DEBVER}_all.deb" >/dev/null
+echo "built: $OUT/${PKG}_${DEBVER}_all.deb"
