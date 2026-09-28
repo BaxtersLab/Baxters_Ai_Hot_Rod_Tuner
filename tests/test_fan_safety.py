@@ -158,6 +158,37 @@ def test_backstop_raises_floor_when_rpm_lags(rig):
     assert fm._duty_floor > before
 
 
+def test_a_lagging_fan_raises_the_floor_on_the_next_request(rig):
+    """The backstop, through the path a request takes.
+
+    test_backstop_raises_floor_when_rpm_lags calls _enforce_floor_from_rpm()
+    directly, and stayed green with the call removed from _apply_pct_linux
+    (owner review, 2026-09-27): the primitive worked and nothing reached it.
+    """
+    fm._detect_backend_linux()
+    fm._apply_pct_linux(50)                           # engage + calibrate
+    before = fm._duty_floor
+    lagging = fm._linux_pwm_paths[0]
+    fm._baseline_rpm[lagging] = 9999                  # measured below baseline
+
+    fm._apply_pct_linux(10)
+
+    assert fm._duty_floor > before, "a fan below its baseline must raise the floor"
+    applied = int(rig["fans"][0].pwm.read_text().strip())
+    assert applied >= fm._duty_floor, "and the next write must honour the raised floor"
+
+
+def test_the_baseline_keeps_the_busiest_firmware_state(rig):
+    """The firmware ramps with load; the floor must clear the busiest state
+    seen before engaging, not whichever sample came last."""
+    fm._detect_backend_linux()
+    fan = rig["fans"][0]
+    for rpm in (2800, 3400, 2500):                    # idle, under load, idle again
+        fan.auto_rpm = rpm
+        fm.sample_linux_baseline()
+    assert fm._baseline_rpm[fm._linux_pwm_paths[0]] == 3400
+
+
 def test_floor_never_decreases_within_a_session(rig):
     fm._detect_backend_linux()
     fm._apply_pct_linux(100)
