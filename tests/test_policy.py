@@ -21,7 +21,10 @@ from hotrod_tuner import __version__
 
 def test_version():
     """pyproject, __version__ and the .deb's control name one version. They
-    had drifted apart: 0.1.0, 0.0.1 and 1.0.3."""
+    had drifted apart: 0.1.0, 0.0.1 and 1.0.3. The control may add a Debian
+    revision (1.0.4-1: the same program, packaged again), so what must agree
+    is its upstream part -- the rule bxdeb's bx_assert_versions_agree applies:
+    an exact match, or a match once everything after the LAST '-' is dropped."""
     import re
     import tomllib
     root = Path(__file__).resolve().parents[1]
@@ -29,7 +32,9 @@ def test_version():
     control = re.search(r"^Version: (\S+)$",
                         (root / "packaging" / "DEBIAN" / "control").read_text(encoding="utf-8"), re.M)
     assert control, "no Version: line in the control file"
-    assert __version__ == project == control.group(1), (__version__, project, control.group(1))
+    deb = control.group(1)
+    assert __version__ == project, (__version__, project)
+    assert deb == project or deb.rsplit("-", 1)[0] == project, (deb, project)
 
 
 def test_sound_manager(tmp_path, monkeypatch):
