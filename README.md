@@ -167,4 +167,4 @@ vendor/lhm/             # LibreHardwareMonitor binaries
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

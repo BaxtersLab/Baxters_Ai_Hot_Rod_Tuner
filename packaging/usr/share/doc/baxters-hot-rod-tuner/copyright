@@ -4,13 +4,27 @@ Source: https://github.com/BaxtersLab/Baxters_Ai_Hot_Rod_Tuner
 
 Files: *
 Copyright: 2026 Baxters Lab
-License: Apache-2.0
- Depends on python3-gi (LGPL-2.1+), which does not propagate its licence to this work.
- .
-
-License: Apache-2.0
- The full text of this licence is in /usr/share/common-licenses/Apache-2.0 on Debian and Ubuntu systems.
- .
- This package is open source. Third-party components it depends on are supplied
- by the distribution and remain under their own licences; this package does not
+License: MIT
+Comment: Depends on python3-gi (LGPL-2.1+), which does not propagate its
+ licence to this work. Third-party components it depends on are supplied by
+ the distribution and remain under their own licences; this package does not
  bundle or redistribute them.
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
