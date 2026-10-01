@@ -1,5 +1,5 @@
 """Hot Rod Tuner package - AI workload governor for hardware protection."""
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 from .metrics import MetricsStore
 from .policies import DecisionEngine, PolicyConfig
