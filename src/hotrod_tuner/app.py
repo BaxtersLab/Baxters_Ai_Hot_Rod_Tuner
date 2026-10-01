@@ -84,6 +84,65 @@ fan_manager = FanManager()
 _linked_apps: list = []
 _LINKED_FILE = _data_dir() / 'linked_apps.json'
 
+# A pidfd per linked app, by app_name, held from the moment it links (or is
+# reconnected at startup). The fd names that one process: once it exits the fd
+# polls readable, and a PID the kernel has since given to another process never
+# reads as the linked app. GET /link lists only apps whose process is still
+# running, and E-Stop never kills an exited app by its old PID. Platforms
+# without pidfds (Windows) keep the earlier behaviour: every entry counts as
+# running.
+_pidfd_open = getattr(_os, 'pidfd_open', None)
+_link_fds: dict = {}
+_link_lock = threading.Lock()
+
+
+def _hold_process(app_name: str, pid: int) -> None:
+    """Hold a pidfd for `pid` under `app_name`, closing any earlier one.
+
+    Raises OSError (ProcessLookupError when no such process runs here) and then
+    changes nothing."""
+    fd = _pidfd_open(pid) if _pidfd_open else None
+    _release_process(app_name)
+    if fd is not None:
+        _link_fds[app_name] = fd
+
+
+def _release_process(app_name: str) -> None:
+    fd = _link_fds.pop(app_name, None)
+    if fd is not None:
+        _os.close(fd)
+
+
+def _link_running(entry: dict) -> bool:
+    """True while the process that linked as this entry is still running."""
+    fd = _link_fds.get(entry.get('app_name'))
+    if fd is None:
+        return _pidfd_open is None
+    import select as _select
+    poller = _select.poll()
+    poller.register(fd, _select.POLLIN)
+    return not poller.poll(0)
+
+
+def _pid_in_this_namespace(proc_pid: int) -> Optional[int]:
+    """HRT's own PID for a process psutil found, or None.
+
+    psutil reads /proc, whose PIDs belong to the PID namespace that mounted it;
+    pidfd_open() takes PIDs from HRT's own. On a normal launch they are the same
+    number. Under a PID namespace that still sees the host's /proc (the release
+    gate) they differ, and a process outside HRT's namespace has none here.
+    """
+    try:
+        if _os.readlink(f'/proc/{proc_pid}/ns/pid') != _os.readlink('/proc/self/ns/pid'):
+            return None
+        with open(f'/proc/{proc_pid}/status', encoding='ascii') as f:
+            for line in f:
+                if line.startswith('NSpid:'):
+                    return int(line.split()[-1])
+    except (OSError, ValueError):
+        return None
+    return None
+
 def _save_linked():
     """Persist linked apps list to disk."""
     try:
@@ -114,14 +173,23 @@ def _load_linked():
                                 break
                         except (psutil.NoSuchProcess, psutil.AccessDenied):
                             continue
+                    if found_pid and _pidfd_open:
+                        found_pid = _pid_in_this_namespace(found_pid)
+                        try:
+                            if found_pid is None:
+                                raise ProcessLookupError
+                            _hold_process(entry.get('app_name'), found_pid)
+                        except OSError:
+                            found_pid = None
                     if found_pid:
                         entry['pid'] = found_pid
                         reconnected.append(entry)
                         print(f'[HRT] Reconnected to {entry.get("app_name","?")} (pid={found_pid})')
                     else:
                         print(f'[HRT] {entry.get("app_name","?")} not running — skipped')
-                _linked_apps[:] = reconnected
-                _save_linked()
+                with _link_lock:
+                    _linked_apps[:] = reconnected
+                    _save_linked()
                 print(f'[HRT] Linked apps: {len(reconnected)} connected, {len(data) - len(reconnected)} not running')
     except Exception as e:
         print(f'[HRT] WARNING: could not load linked apps: {e}')
@@ -626,23 +694,31 @@ def open_sound_folder():
 @app.post('/link')
 def link_app(payload: LinkPayload):
     """Register an external app so HRT can monitor and e-stop it."""
-    # Remove any stale entry for the same app
-    _linked_apps[:] = [a for a in _linked_apps if a['app_name'] != payload.app_name]
-    entry = {
-        'app_name': payload.app_name,
-        'exe_path': payload.exe_path,
-        'pid': payload.pid,
-        'linked_at': now_utc_iso(),
-    }
-    _linked_apps.append(entry)
-    _save_linked()
+    with _link_lock:
+        try:
+            _hold_process(payload.app_name, payload.pid)
+        except OSError as e:
+            raise HTTPException(
+                status_code=422,
+                detail=f'no running process with pid {payload.pid}: {e.strerror or e}')
+        # Remove any stale entry for the same app
+        _linked_apps[:] = [a for a in _linked_apps if a['app_name'] != payload.app_name]
+        entry = {
+            'app_name': payload.app_name,
+            'exe_path': payload.exe_path,
+            'pid': payload.pid,
+            'linked_at': now_utc_iso(),
+        }
+        _linked_apps.append(entry)
+        _save_linked()
     return {"ok": True, "linked": entry}
 
 
 @app.get('/link')
 def get_linked_apps():
-    """Return the list of currently linked external apps."""
-    return {"linked_apps": _linked_apps}
+    """Return the linked external apps whose process is still running."""
+    with _link_lock:
+        return {"linked_apps": [a for a in _linked_apps if _link_running(a)]}
 
 
 @app.post('/api/shutdown')
@@ -707,10 +783,21 @@ def server_estop(payload: EstopPayload = EstopPayload()):
 
         print(f'[HRT] E-STOP: linked_apps={len(_linked_apps)}, targets={payload.targets}')
 
-        # 1. Kill all linked apps by PID
-        for a in list(_linked_apps):
+        # 1. Kill all linked apps by PID, while that PID is still the process
+        #    that linked. An exited app's PID may belong to another process by
+        #    now; its exe name still goes to the name scan below.
+        with _link_lock:
+            linked_now = [(a, _link_running(a)) for a in _linked_apps]
+        exited_apps = set()
+        for a, running in linked_now:
             pid = a.get('pid')
             if not pid:
+                continue
+            if not running:
+                exited_apps.add(a.get('app_name'))
+                results.append({"pid": pid, "ok": True, "method": "exited",
+                                "source": "linked", "app": a.get("app_name", "?")})
+                print(f'[HRT] E-STOP: linked app "{a.get("app_name", "?")}" pid={pid} already exited; not killed by PID')
                 continue
             print(f'[HRT] E-STOP: killing linked app "{a.get("app_name", "?")}" pid={pid}')
             r = _safe_kill(pid)
@@ -729,7 +816,7 @@ def server_estop(payload: EstopPayload = EstopPayload()):
                 target_names.add(name)
 
         # Also add linked app exe names as fallback (handles stale PIDs)
-        for a in list(_linked_apps):
+        for a, _running in linked_now:
             exe_path = a.get('exe_path', '')
             if exe_path:
                 name = exe_path.strip().rsplit("\\", 1)[-1].rsplit("/", 1)[-1].lower()
@@ -760,15 +847,21 @@ def server_estop(payload: EstopPayload = EstopPayload()):
 
         # Remove killed apps from linked list to prevent re-kill floods
         killed_names = set()
-        if killed_pids:
-            before = len(_linked_apps)
-            for a in _linked_apps:
-                if a.get('pid') in killed_pids:
-                    ep = a.get('exe_path', '')
-                    if ep:
-                        killed_names.add(ep.strip().rsplit('\\', 1)[-1].rsplit('/', 1)[-1].lower())
-            _linked_apps[:] = [a for a in _linked_apps if a.get('pid') not in killed_pids]
-            _save_linked()
+        if killed_pids or exited_apps:
+            with _link_lock:
+                before = len(_linked_apps)
+                for a in _linked_apps:
+                    if a.get('pid') in killed_pids:
+                        ep = a.get('exe_path', '')
+                        if ep:
+                            killed_names.add(ep.strip().rsplit('\\', 1)[-1].rsplit('/', 1)[-1].lower())
+                # An app that relinked during the E-Stop is running again: keep it.
+                gone = [a for a in _linked_apps if a.get('pid') in killed_pids
+                        or (a.get('app_name') in exited_apps and not _link_running(a))]
+                for a in gone:
+                    _release_process(a.get('app_name'))
+                _linked_apps[:] = [a for a in _linked_apps if a not in gone]
+                _save_linked()
             print(f'[HRT] E-STOP: cleaned linked_apps {before} → {len(_linked_apps)}')
         # Also add any name-match kills
         for r in results:

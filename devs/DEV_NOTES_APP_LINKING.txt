@@ -45,10 +45,16 @@ POST /link â€” Register a linked app
   Notes:
     - Re-posting with the same app_name replaces the previous entry (dedup).
     - The server stores entries in an in-memory list (_linked_apps).
+    - The pid must name a running process: HRT holds a pidfd for it from
+      that moment. A pid with no process gets 422 and nothing is stored.
 
-GET /link â€” List all linked apps
+GET /link â€” List linked apps that are still running
   Response (200):
     { "linked_apps": [ ...entries... ] }
+  Notes:
+    - An app whose process has exited drops out of this list, and E-Stop
+      never kills it by its old PID (that number may belong to another
+      process by then). Its exe name still reaches E-Stop's name scan.
 
 POST /kill  (alias: POST /api/kill) â€” Kill a process by exe path
   Request body (JSON):
